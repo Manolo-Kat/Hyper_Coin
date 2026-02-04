@@ -352,7 +352,7 @@ async def track_voice():
                 continue
 
             banned_role = await get_setting(data['guild_id'], 'banned_role')
-            member = bot.cache.get_member(data['guild_id'], user_id)
+            member = event.app.cache.get_member(data['guild_id'], user_id)
             if member and banned_role and banned_role in member.role_ids:
                 remove_list.append(user_id)
                 continue
