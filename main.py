@@ -813,6 +813,36 @@ async def balance(ctx):
 
     await ctx.respond(embed=embed)
 
+@bot.command
+@lightbulb.command("ping", "Check if the bot is alive")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def ping(ctx):
+    await ctx.respond(f"Pong! Latency: {round(bot.heartbeat_latency * 1000)}ms")
+
+@bot.command
+@lightbulb.command("help", "See all available commands")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def help_cmd(ctx):
+    embed = hikari.Embed(
+        title="🤖 Bot Help Menu",
+        description="Here is a list of all commands you can use:",
+        color=0x5865F2
+    )
+    
+    # Economy Commands
+    embed.add_field("💰 Economy", "`/balance` - Check your wallet\n`/daily` - Claim daily coins", inline=False)
+    
+    # Staff Commands
+    embed.add_field("🛠️ Management", "`/addcoins` - Give coins\n`/removecoins` - Take coins\n`/setprice` - Set coin value\n`/ignorechannel` - Toggle channel tracking", inline=False)
+    
+    # Setup Commands
+    embed.add_field("⚙️ Setup", "`/setleaderboard` - Setup leaderboard\n`/setredeem` - Setup redeem shop\n`/setapproval` - Set staff logs\n`/setbanned` - Set blacklisted role", inline=False)
+    
+    # Misc
+    embed.add_field("✨ Misc", "`/ping` - Check connection\n`/help` - This menu", inline=False)
+    
+    await ctx.respond(embed=embed)
+
 if __name__ == "__main__":
     bot.run(
         activity=hikari.Activity(
