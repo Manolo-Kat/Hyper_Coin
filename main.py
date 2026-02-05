@@ -13,9 +13,22 @@ from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')
+from dotenv import dotenv_values
+
+config_env = dotenv_values(".env")
+BOT_TOKEN = config_env.get('BOT_TOKEN')
+
+if not BOT_TOKEN:
+    print("=" * 60)
+    print("ERROR: BOT_TOKEN not found in .env file!")
+    print("=" * 60)
+    print("Please create a .env file with:")
+    print("BOT_TOKEN=your_bot_token_here")
+    print("=" * 60)
+    exit(1)
 
 bot = lightbulb.BotApp(
-    token=os.getenv('BOT_TOKEN'),
+    token=BOT_TOKEN,
     intents=hikari.Intents.ALL,
     default_enabled_guilds=()
 )
