@@ -4,10 +4,11 @@ import miru
 import asyncio
 import aiohttp
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import json
 import os
+import base64
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
@@ -32,204 +33,334 @@ bot = lightbulb.BotApp(
     intents=hikari.Intents.ALL,
     default_enabled_guilds=()
 )
-miru.install(bot)
+
+miru_client = miru.Client(bot)
 
 OWNER_ID = 867623049741860874
 MOD_ROLE_ID = 1373312465626202222
 
-user_data = {}
-cooldowns = {}
-voice_join_times = {}
-daily_earnings = defaultdict(int)
-last_daily = {}
-streaks = {}
-last_activity = {}
-uncounted_channels = set()
-banned_role_id = None
-config = {
-    'leaderboard_channel': None,
-    'leaderboard_msg': None,
-    'leaderboard_color': 0x5865F2,
-    'redeem_channel': None,
-    'redeem_msg': None,
-    'redeem_color': 0x5865F2,
-    'redeem_button_color': hikari.ButtonStyle.PRIMARY,
-    'redeem_button_text': 'Redeem',
-    'approval_channel': None,
-    'price_per_usd': 100,
-    'log_channel': None
-}
+guild_data = {}
+
+def get_guild_data(guild_id):
+    if guild_id not in guild_data:
+        guild_data[guild_id] = {
+            'users': {},
+            'cooldowns': {},
+            'voice_times': {},
+            'daily_earnings': defaultdict(int),
+            'last_daily': {},
+            'streaks': {},
+            'last_activity': {},
+            'uncounted': set(),
+            'banned_role': None,
+            'config': {
+                'leaderboard_channel': None,
+                'leaderboard_msg': None,
+                'leaderboard_color': 0x5865F2,
+                'redeem_channel': None,
+                'redeem_msg': None,
+                'redeem_color': 0x5865F2,
+                'redeem_button_color': 'PRIMARY',
+                'redeem_button_text': 'Redeem',
+                'approval_channel': None,
+                'price_per_usd': 100,
+                'log_channel': None,
+                'price_history': []  # Store price changes
+            }
+        }
+    return guild_data[guild_id]
 
 def load_data():
-    global user_data, uncounted_channels, config, last_daily, streaks, last_activity, banned_role_id
+    global guild_data
     try:
         with open('data.json', 'r') as f:
             data = json.load(f)
-            user_data = {int(k): v for k, v in data.get('users', {}).items()}
-            uncounted_channels = set(data.get('uncounted', []))
-            config.update(data.get('config', {}))
-            last_daily = {int(k): datetime.fromisoformat(v) for k, v in data.get('daily', {}).items()}
-            streaks = {int(k): v for k, v in data.get('streaks', {}).items()}
-            last_activity = {int(k): datetime.fromisoformat(v) for k, v in data.get('activity', {}).items()}
-            banned_role_id = data.get('banned_role')
+            for gid, gdata in data.items():
+                guild_id = int(gid)
+                guild_data[guild_id] = {
+                    'users': {int(k): v for k, v in gdata.get('users', {}).items()},
+                    'cooldowns': {},
+                    'voice_times': {},
+                    'daily_earnings': defaultdict(int),
+                    'last_daily': {int(k): datetime.fromisoformat(v) for k, v in gdata.get('daily', {}).items()},
+                    'streaks': {int(k): v for k, v in gdata.get('streaks', {}).items()},
+                    'last_activity': {int(k): datetime.fromisoformat(v) for k, v in gdata.get('activity', {}).items()},
+                    'uncounted': set(gdata.get('uncounted', [])),
+                    'banned_role': gdata.get('banned_role'),
+                    'config': gdata.get('config', {})
+                }
+                if 'leaderboard_color' not in guild_data[guild_id]['config']:
+                    guild_data[guild_id]['config']['leaderboard_color'] = 0x5865F2
+                if 'redeem_color' not in guild_data[guild_id]['config']:
+                    guild_data[guild_id]['config']['redeem_color'] = 0x5865F2
+                if 'redeem_button_color' not in guild_data[guild_id]['config']:
+                    guild_data[guild_id]['config']['redeem_button_color'] = 'PRIMARY'
+                if 'redeem_button_text' not in guild_data[guild_id]['config']:
+                    guild_data[guild_id]['config']['redeem_button_text'] = 'Redeem'
+                if 'price_per_usd' not in guild_data[guild_id]['config']:
+                    guild_data[guild_id]['config']['price_per_usd'] = 100
+                if 'price_history' not in guild_data[guild_id]['config']:
+                    guild_data[guild_id]['config']['price_history'] = []
     except:
         pass
 
 def save_data():
-    data = {
-        'users': user_data,
-        'uncounted': list(uncounted_channels),
-        'config': config,
-        'daily': {k: v.isoformat() for k, v in last_daily.items()},
-        'streaks': streaks,
-        'activity': {k: v.isoformat() for k, v in last_activity.items()},
-        'banned_role': banned_role_id
-    }
+    data = {}
+    for gid, gdata in guild_data.items():
+        data[str(gid)] = {
+            'users': gdata['users'],
+            'daily': {k: v.isoformat() for k, v in gdata['last_daily'].items()},
+            'streaks': gdata['streaks'],
+            'activity': {k: v.isoformat() for k, v in gdata['last_activity'].items()},
+            'uncounted': list(gdata['uncounted']),
+            'banned_role': gdata['banned_role'],
+            'config': gdata['config']
+        }
     with open('data.json', 'w') as f:
         json.dump(data, f)
 
-def get_streak_mult(user_id):
-    streak = streaks.get(user_id, 0)
+def get_streak_mult(guild_id, user_id):
+    gdata = get_guild_data(guild_id)
+    streak = gdata['streaks'].get(user_id, 0)
     mults = {0: 1, 1: 1.25, 2: 1.5, 3: 1.75, 4: 2, 5: 2.25, 6: 2.25, 7: 2.5}
     return mults.get(min(streak, 7), 1)
 
-def check_streak(user_id):
-    now = datetime.now()
-    if user_id in last_activity:
-        diff = (now - last_activity[user_id]).total_seconds() / 3600
+def check_streak(guild_id, user_id):
+    gdata = get_guild_data(guild_id)
+    now = datetime.now(timezone.utc)
+    if user_id in gdata['last_activity']:
+        diff = (now - gdata['last_activity'][user_id]).total_seconds() / 3600
         if diff > 24:
-            streaks[user_id] = 0
-    last_activity[user_id] = now
+            gdata['streaks'][user_id] = 0
+    gdata['last_activity'][user_id] = now
 
-def is_banned(member):
-    if not banned_role_id:
+def is_banned(guild_id, member):
+    gdata = get_guild_data(guild_id)
+    if not gdata['banned_role']:
         return False
-    return banned_role_id in member.role_ids
+    return gdata['banned_role'] in member.role_ids
 
-async def add_coins(user_id, amount):
-    if user_id not in user_data:
-        user_data[user_id] = 0
+def is_booster(member):
+    """Check if member is boosting the server"""
+    if not member:
+        return False
+    return member.premium_since is not None
 
-    today = datetime.now().date()
+async def add_coins(guild_id, user_id, amount, member=None):
+    gdata = get_guild_data(guild_id)
+    if user_id not in gdata['users']:
+        gdata['users'][user_id] = 0
+
+    today = datetime.now(timezone.utc).date()
     daily_key = f"{user_id}_{today}"
 
-    if daily_earnings[daily_key] >= 200:
+    # Check if booster for higher daily limit
+    is_boosting = is_booster(member) if member else False
+    daily_limit = 400 if is_boosting else 200
+
+    if gdata['daily_earnings'][daily_key] >= daily_limit:
         return False
 
-    mult = get_streak_mult(user_id)
+    # Apply streak multiplier
+    mult = get_streak_mult(guild_id, user_id)
+
+    # Apply booster 2x multiplier (stacks with streak)
+    if is_boosting:
+        mult *= 2
+
     actual = int(amount * mult)
 
-    if daily_earnings[daily_key] + actual > 200:
-        actual = 200 - daily_earnings[daily_key]
+    if gdata['daily_earnings'][daily_key] + actual > daily_limit:
+        actual = daily_limit - gdata['daily_earnings'][daily_key]
 
-    user_data[user_id] += actual
-    daily_earnings[daily_key] += actual
+    gdata['users'][user_id] += actual
+    gdata['daily_earnings'][daily_key] += actual
     save_data()
     return True
 
-def create_chart():
-    fig, ax = plt.subplots(figsize=(8, 5))
+def parse_color(color_input):
+    if not color_input:
+        return 0x5865F2
 
-    price = config['price_per_usd']
-    amounts = [1, 5, 10, 20, 50]
-    coins = [price * x for x in amounts]
+    color_input = color_input.strip().lower()
 
-    bars = ax.bar([f'${x}' for x in amounts], coins, color='#5865F2')
-    ax.set_ylabel('Coins', fontsize=12)
-    ax.set_title('Reward Prices', fontsize=14, fontweight='bold')
-    ax.grid(axis='y', alpha=0.3)
+    # Remove # if present
+    if color_input.startswith('#'):
+        color_input = color_input[1:]
 
-    for bar, coin in zip(bars, coins):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height,
-                f'{int(coin)}', ha='center', va='bottom', fontsize=10)
+    # Try hex
+    try:
+        return int(color_input, 16)
+    except:
+        pass
+
+    # Color names
+    colors = {
+        'red': 0xFF0000, 'green': 0x00FF00, 'blue': 0x0000FF,
+        'yellow': 0xFFFF00, 'purple': 0x800080, 'pink': 0xFFC0CB,
+        'orange': 0xFFA500, 'gold': 0xFFD700, 'teal': 0x008080,
+        'cyan': 0x00FFFF, 'magenta': 0xFF00FF, 'lime': 0x00FF00,
+        'navy': 0x000080, 'maroon': 0x800000, 'olive': 0x808000,
+        'white': 0xFFFFFF, 'black': 0x000000, 'gray': 0x808080,
+        'grey': 0x808080, 'silver': 0xC0C0C0
+    }
+
+    return colors.get(color_input, 0x5865F2)
+
+def create_chart(guild_id):
+    gdata = get_guild_data(guild_id)
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    price_history = gdata['config'].get('price_history', [])
+    current_price = gdata['config']['price_per_usd']
+
+    # If no history, create initial entry
+    if not price_history:
+        price_history = [{'price': current_price, 'timestamp': datetime.now(timezone.utc).isoformat()}]
+        gdata['config']['price_history'] = price_history
+
+    # Extract prices and timestamps
+    prices = [entry['price'] for entry in price_history]
+    timestamps = [datetime.fromisoformat(entry['timestamp']) for entry in price_history]
+
+    # Add current price if it's different from last
+    if prices[-1] != current_price:
+        timestamps.append(datetime.now(timezone.utc))
+        prices.append(current_price)
+
+    # Create line chart
+    ax.plot(timestamps, prices, color='#5865F2', linewidth=2.5, marker='o', markersize=8)
+    ax.fill_between(timestamps, prices, alpha=0.2, color='#5865F2')
+
+    # Calculate change
+    if len(prices) > 1:
+        change = prices[-1] - prices[0]
+        change_percent = (change / prices[0]) * 100
+        change_color = '#00FF00' if change >= 0 else '#FF0000'
+        change_symbol = '▲' if change >= 0 else '▼'
+
+        # Add change indicator
+        ax.text(0.02, 0.98, f'{change_symbol} {change:+.0f} ({change_percent:+.1f}%)',
+                transform=ax.transAxes, fontsize=14, fontweight='bold',
+                color=change_color, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+    # Styling
+    ax.set_xlabel('Time', fontsize=12)
+    ax.set_ylabel('Coins per $1 USD', fontsize=12)
+    ax.set_title(f'Price History - Current: {current_price} coins/$1', fontsize=16, fontweight='bold')
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    # Format x-axis
+    if len(timestamps) > 1:
+        plt.xticks(rotation=45, ha='right')
+
+    # Add horizontal line at current price
+    ax.axhline(y=current_price, color='gray', linestyle='--', alpha=0.5, linewidth=1)
 
     buf = BytesIO()
     plt.tight_layout()
-    plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+    plt.savefig(buf, format='png', dpi=120, bbox_inches='tight', facecolor='white')
     buf.seek(0)
     plt.close()
     return buf
 
 class RedeemButton(miru.Button):
-    def __init__(self):
+    def __init__(self, guild_id):
+        gdata = get_guild_data(guild_id)
+        style_map = {
+            'PRIMARY': hikari.ButtonStyle.PRIMARY,
+            'SUCCESS': hikari.ButtonStyle.SUCCESS,
+            'DANGER': hikari.ButtonStyle.DANGER,
+            'SECONDARY': hikari.ButtonStyle.SECONDARY
+        }
+        button_style = style_map.get(gdata['config'].get('redeem_button_color', 'PRIMARY'), hikari.ButtonStyle.PRIMARY)
+
         super().__init__(
-            style=config['redeem_button_color'],
-            label=config['redeem_button_text']
+            style=button_style,
+            label=gdata['config'].get('redeem_button_text', 'Redeem')
         )
+        self.guild_id = guild_id
 
     async def callback(self, ctx: miru.ViewContext):
-        member = ctx.guild_id and await bot.rest.fetch_member(ctx.guild_id, ctx.user.id)
-        if member and is_banned(member):
+        gdata = get_guild_data(self.guild_id)
+        member = ctx.member
+        if member and is_banned(self.guild_id, member):
             await ctx.respond("You're banned from using this bot.", flags=hikari.MessageFlag.EPHEMERAL)
             return
 
-        balance = user_data.get(ctx.user.id, 0)
-        required = config['price_per_usd'] * 5
+        balance = gdata['users'].get(ctx.user.id, 0)
+        required = gdata['config']['price_per_usd'] * 5
 
         if balance < required:
-            await ctx.respond(f"You need at least {required} coins (5$) to redeem.", flags=hikari.MessageFlag.EPHEMERAL)
+            await ctx.respond(f"You need at least {required} coins ($5) to redeem.", flags=hikari.MessageFlag.EPHEMERAL)
             return
 
-        modal = RedeemModal()
+        modal = RedeemModal(self.guild_id)
         await ctx.respond_with_modal(modal)
 
 class RedeemModal(miru.Modal):
-    def __init__(self):
+    def __init__(self, guild_id):
         super().__init__("Redeem Reward")
+        self.guild_id = guild_id
         self.add_item(miru.TextInput(label="Reward Type", placeholder="e.g., Discord Nitro, PayPal, etc."))
         self.add_item(miru.TextInput(label="Reward Details", placeholder="Amount/details", style=hikari.TextInputStyle.PARAGRAPH))
 
     async def callback(self, ctx: miru.ModalContext):
+        gdata = get_guild_data(self.guild_id)
         reward_type = self.children[0].value
         reward_details = self.children[1].value
 
-        view = ApprovalView(ctx.user.id, reward_type, reward_details)
+        view = ApprovalView(self.guild_id, ctx.user.id, reward_type, reward_details)
 
         embed = hikari.Embed(
             title="💰 Reward Redemption Request",
             color=0xFFD700
         )
         embed.add_field("User", f"<@{ctx.user.id}>", inline=True)
-        embed.add_field("Balance", f"{user_data.get(ctx.user.id, 0)} coins", inline=True)
+        embed.add_field("Balance", f"{gdata['users'].get(ctx.user.id, 0)} coins", inline=True)
         embed.add_field("Reward Type", reward_type, inline=False)
         embed.add_field("Reward Details", reward_details, inline=False)
-        embed.timestamp = datetime.now()
+        embed.timestamp = datetime.now(timezone.utc)
 
-        channel = config.get('approval_channel')
+        channel = gdata['config'].get('approval_channel')
         if channel:
             msg = await bot.rest.create_message(channel, embed=embed, components=view)
-            view.start(msg)
+            miru_client.start_view(view, bind_to=msg)
 
         await ctx.respond("Your redemption request has been submitted!", flags=hikari.MessageFlag.EPHEMERAL)
 
 class ApprovalView(miru.View):
-    def __init__(self, user_id, reward_type, reward_details):
+    def __init__(self, guild_id, user_id, reward_type, reward_details):
         super().__init__(timeout=None)
+        self.guild_id = guild_id
         self.user_id = user_id
         self.reward_type = reward_type
         self.reward_details = reward_details
 
     @miru.button(label="Reject w/ Response", style=hikari.ButtonStyle.DANGER)
-    async def reject_btn(self, btn: miru.Button, ctx: miru.ViewContext):
+    async def reject_btn(self, button: miru.Button, ctx: miru.ViewContext):
         member = await bot.rest.fetch_member(ctx.guild_id, ctx.user.id)
         if MOD_ROLE_ID not in member.role_ids and ctx.user.id != OWNER_ID:
             await ctx.respond("You don't have permission.", flags=hikari.MessageFlag.EPHEMERAL)
             return
 
-        modal = ResponseModal(self.user_id, False, self.reward_type, self.reward_details)
+        modal = ResponseModal(self.guild_id, self.user_id, False, self.reward_type, self.reward_details)
         await ctx.respond_with_modal(modal)
 
     @miru.button(label="Accept (No Response)", style=hikari.ButtonStyle.SUCCESS)
-    async def accept_no_response(self, btn: miru.Button, ctx: miru.ViewContext):
+    async def accept_no_response(self, button: miru.Button, ctx: miru.ViewContext):
+        gdata = get_guild_data(self.guild_id)
         member = await bot.rest.fetch_member(ctx.guild_id, ctx.user.id)
         if MOD_ROLE_ID not in member.role_ids and ctx.user.id != OWNER_ID:
             await ctx.respond("You don't have permission.", flags=hikari.MessageFlag.EPHEMERAL)
             return
 
         amount = self.calculate_cost()
-        if user_data.get(self.user_id, 0) >= amount:
-            user_data[self.user_id] -= amount
+        if gdata['users'].get(self.user_id, 0) >= amount:
+            gdata['users'][self.user_id] -= amount
             save_data()
 
             embed = hikari.Embed(title="✅ Redemption Approved", color=0x00FF00)
@@ -238,26 +369,28 @@ class ApprovalView(miru.View):
             await ctx.respond("Request approved.", flags=hikari.MessageFlag.EPHEMERAL)
 
     @miru.button(label="Accept w/ Response", style=hikari.ButtonStyle.SUCCESS)
-    async def accept_response(self, btn: miru.Button, ctx: miru.ViewContext):
+    async def accept_response(self, button: miru.Button, ctx: miru.ViewContext):
         member = await bot.rest.fetch_member(ctx.guild_id, ctx.user.id)
         if MOD_ROLE_ID not in member.role_ids and ctx.user.id != OWNER_ID:
             await ctx.respond("You don't have permission.", flags=hikari.MessageFlag.EPHEMERAL)
             return
 
-        modal = ResponseModal(self.user_id, True, self.reward_type, self.reward_details)
+        modal = ResponseModal(self.guild_id, self.user_id, True, self.reward_type, self.reward_details)
         await ctx.respond_with_modal(modal)
 
     def calculate_cost(self):
+        gdata = get_guild_data(self.guild_id)
         details = self.reward_details.lower()
         for i in range(1, 1000):
             if str(i) in details or f"${i}" in details:
-                return config['price_per_usd'] * i
-        return config['price_per_usd'] * 5
+                return gdata['config']['price_per_usd'] * i
+        return gdata['config']['price_per_usd'] * 5
 
 class ResponseModal(miru.Modal):
-    def __init__(self, user_id, is_accept, reward_type, reward_details):
+    def __init__(self, guild_id, user_id, is_accept, reward_type, reward_details):
         title = "Acceptance Message" if is_accept else "Rejection Reason"
         super().__init__(title)
+        self.guild_id = guild_id
         self.user_id = user_id
         self.is_accept = is_accept
         self.reward_type = reward_type
@@ -267,6 +400,7 @@ class ResponseModal(miru.Modal):
         self.add_item(miru.TextInput(label=label, style=hikari.TextInputStyle.PARAGRAPH))
 
     async def callback(self, ctx: miru.ModalContext):
+        gdata = get_guild_data(self.guild_id)
         message = self.children[0].value
 
         try:
@@ -275,8 +409,8 @@ class ResponseModal(miru.Modal):
 
             if self.is_accept:
                 amount = self.calculate_cost()
-                if user_data.get(self.user_id, 0) >= amount:
-                    user_data[self.user_id] -= amount
+                if gdata['users'].get(self.user_id, 0) >= amount:
+                    gdata['users'][self.user_id] -= amount
                     save_data()
 
                 embed = hikari.Embed(title="✅ Redemption Approved", color=0x00FF00)
@@ -300,18 +434,19 @@ class ResponseModal(miru.Modal):
         await ctx.respond("Response sent.", flags=hikari.MessageFlag.EPHEMERAL)
 
     def calculate_cost(self):
+        gdata = get_guild_data(self.guild_id)
         details = self.reward_details.lower()
         for i in range(1, 1000):
             if str(i) in details or f"${i}" in details:
-                return config['price_per_usd'] * i
-        return config['price_per_usd'] * 5
+                return gdata['config']['price_per_usd'] * i
+        return gdata['config']['price_per_usd'] * 5
 
 @bot.listen(hikari.StartedEvent)
 async def on_start(event):
     load_data()
     bot.d.session = aiohttp.ClientSession()
-    asyncio.create_task(update_leaderboard_loop())
-    asyncio.create_task(update_redeem_loop())
+    asyncio.create_task(update_all_leaderboards())
+    asyncio.create_task(update_all_redeems())
 
     await bot.update_presence(
         status=hikari.Status.DO_NOT_DISTURB,
@@ -330,62 +465,67 @@ async def on_message(event):
     if event.author.is_bot:
         return
 
-    if event.channel_id in uncounted_channels:
+    gdata = get_guild_data(event.guild_id)
+
+    if event.channel_id in gdata['uncounted']:
         return
 
     member = event.member
-    if member and is_banned(member):
+    if member and is_banned(event.guild_id, member):
         return
 
     user_id = event.author.id
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
-    if user_id in cooldowns:
-        if (now - cooldowns[user_id]).total_seconds() < 25:
+    if user_id in gdata['cooldowns']:
+        if (now - gdata['cooldowns'][user_id]).total_seconds() < 25:
             return
 
-    cooldowns[user_id] = now
-    check_streak(user_id)
-    await add_coins(user_id, 5)
+    gdata['cooldowns'][user_id] = now
+    check_streak(event.guild_id, user_id)
+    await add_coins(event.guild_id, user_id, 5, member)
 
 @bot.listen(hikari.VoiceStateUpdateEvent)
 async def on_voice(event):
     if event.state.member.is_bot:
         return
 
-    if event.state.channel_id in uncounted_channels:
+    gdata = get_guild_data(event.state.guild_id)
+
+    if event.state.channel_id and event.state.channel_id in gdata['uncounted']:
         return
 
-    if is_banned(event.state.member):
+    if is_banned(event.state.guild_id, event.state.member):
         return
 
     user_id = event.state.user_id
 
     if event.state.channel_id and not event.old_state:
-        voice_join_times[user_id] = datetime.now()
+        gdata['voice_times'][user_id] = datetime.now(timezone.utc)
     elif not event.state.channel_id and event.old_state:
-        if user_id in voice_join_times:
-            duration = (datetime.now() - voice_join_times[user_id]).total_seconds()
+        if user_id in gdata['voice_times']:
+            duration = (datetime.now(timezone.utc) - gdata['voice_times'][user_id]).total_seconds()
             hours = duration / 3600
             coins = int(hours * 20)
-            check_streak(user_id)
-            await add_coins(user_id, coins)
-            del voice_join_times[user_id]
+            check_streak(event.state.guild_id, user_id)
+            await add_coins(event.state.guild_id, user_id, coins, event.state.member)
+            del gdata['voice_times'][user_id]
 
 @bot.command
 @lightbulb.command("daily", "Claim your daily reward")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def daily_cmd(ctx):
+    gdata = get_guild_data(ctx.guild_id)
     member = ctx.member
-    if member and is_banned(member):
+    if member and is_banned(ctx.guild_id, member):
         await ctx.respond("You're banned from using this bot.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
     user_id = ctx.user.id
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
-    if user_id in last_daily:
-        diff = (now - last_daily[user_id]).total_seconds()
+    if user_id in gdata['last_daily']:
+        diff = (now - gdata['last_daily'][user_id]).total_seconds()
         if diff < 86400:
             remaining = 86400 - diff
             hours = int(remaining // 3600)
@@ -394,21 +534,36 @@ async def daily_cmd(ctx):
             return
 
         if diff > 172800:
-            streaks[user_id] = 0
+            gdata['streaks'][user_id] = 0
 
     amount = random.randint(1, 20)
-    user_data[user_id] = user_data.get(user_id, 0) + amount
-    last_daily[user_id] = now
 
-    if user_id not in streaks:
-        streaks[user_id] = 0
+    # Apply booster 2x multiplier
+    is_boosting = is_booster(member)
+    if is_boosting:
+        amount *= 2
+
+    gdata['users'][user_id] = gdata['users'].get(user_id, 0) + amount
+    gdata['last_daily'][user_id] = now
+
+    if user_id not in gdata['streaks']:
+        gdata['streaks'][user_id] = 0
     else:
-        streaks[user_id] = min(streaks[user_id] + 1, 7)
+        gdata['streaks'][user_id] = min(gdata['streaks'][user_id] + 1, 7)
 
-    check_streak(user_id)
+    check_streak(ctx.guild_id, user_id)
     save_data()
 
-    await ctx.respond(f"You got {amount} coins! Streak: {streaks[user_id]} days", flags=hikari.MessageFlag.EPHEMERAL)
+    embed = hikari.Embed(
+        title="🎁 Daily Reward",
+        description=f"You received **{amount} coins**!" + (" <:Boost_Bot:1470167258603982900> **(Booster Bonus!)**" if is_boosting else ""),
+        color=0xFFD700
+    )
+    embed.add_field("Current Streak", f"{gdata['streaks'][user_id]} days", inline=True)
+    embed.add_field("Multiplier", f"x{get_streak_mult(ctx.guild_id, user_id)}", inline=True)
+    embed.set_footer(text=f"Come back tomorrow to keep your streak!")
+
+    await ctx.respond(embed=embed)
 
 @bot.command
 @lightbulb.option("channel", "Channel to exclude", type=hikari.TextableGuildChannel, required=False)
@@ -421,11 +576,12 @@ async def uncounted_cmd(ctx):
         await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
+    gdata = get_guild_data(ctx.guild_id)
     action = ctx.options.action
 
     if action == "show":
-        if uncounted_channels:
-            channels = ", ".join([f"<#{c}>" for c in uncounted_channels])
+        if gdata['uncounted']:
+            channels = ", ".join([f"<#{c}>" for c in gdata['uncounted']])
             await ctx.respond(f"Uncounted: {channels}", flags=hikari.MessageFlag.EPHEMERAL)
         else:
             await ctx.respond("No uncounted channels.", flags=hikari.MessageFlag.EPHEMERAL)
@@ -437,18 +593,18 @@ async def uncounted_cmd(ctx):
         return
 
     if action == "add":
-        uncounted_channels.add(channel.id)
+        gdata['uncounted'].add(channel.id)
         save_data()
         await ctx.respond(f"Added {channel.mention}", flags=hikari.MessageFlag.EPHEMERAL)
         await log_action(ctx, f"Added {channel.mention} to uncounted channels")
     else:
-        uncounted_channels.discard(channel.id)
+        gdata['uncounted'].discard(channel.id)
         save_data()
         await ctx.respond(f"Removed {channel.mention}", flags=hikari.MessageFlag.EPHEMERAL)
         await log_action(ctx, f"Removed {channel.mention} from uncounted channels")
 
 @bot.command
-@lightbulb.option("color", "Hex color (e.g., FF5733)", required=False, default="5865F2")
+@lightbulb.option("color", "Hex color or name (e.g., FF5733, red, blue)", required=False, default="5865F2")
 @lightbulb.option("channel", "Channel for leaderboard", type=hikari.TextableGuildChannel)
 @lightbulb.command("setleaderboard", "Set leaderboard channel")
 @lightbulb.implements(lightbulb.SlashCommand)
@@ -458,27 +614,25 @@ async def set_leaderboard(ctx):
         await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
-    config['leaderboard_channel'] = ctx.options.channel.id
-
-    try:
-        config['leaderboard_color'] = int(ctx.options.color, 16)
-    except:
-        config['leaderboard_color'] = 0x5865F2
+    gdata = get_guild_data(ctx.guild_id)
+    gdata['config']['leaderboard_channel'] = ctx.options.channel.id
+    gdata['config']['leaderboard_color'] = parse_color(ctx.options.color)
 
     save_data()
     await ctx.respond(f"Leaderboard set to {ctx.options.channel.mention}", flags=hikari.MessageFlag.EPHEMERAL)
-    await update_leaderboard()
+    await update_leaderboard(ctx.guild_id)
     await log_action(ctx, f"Set leaderboard channel to {ctx.options.channel.mention}")
 
-async def update_leaderboard():
-    if not config.get('leaderboard_channel'):
+async def update_leaderboard(guild_id):
+    gdata = get_guild_data(guild_id)
+    if not gdata['config'].get('leaderboard_channel'):
         return
 
-    top = sorted(user_data.items(), key=lambda x: x[1], reverse=True)[:10]
+    top = sorted(gdata['users'].items(), key=lambda x: x[1], reverse=True)[:10]
 
     embed = hikari.Embed(
         title="💰 Top 10 Richest Users",
-        color=config['leaderboard_color']
+        color=gdata['config']['leaderboard_color']
     )
 
     desc = ""
@@ -488,34 +642,35 @@ async def update_leaderboard():
         desc += f"{medal} <@{uid}> - **{bal}** coins\n"
 
     embed.description = desc if desc else "No data yet"
-    embed.timestamp = datetime.now()
+    embed.timestamp = datetime.now(timezone.utc)
 
-    channel = config['leaderboard_channel']
+    channel = gdata['config']['leaderboard_channel']
 
     try:
-        if config.get('leaderboard_msg'):
+        if gdata['config'].get('leaderboard_msg'):
             try:
-                await bot.rest.edit_message(channel, config['leaderboard_msg'], embed=embed)
+                await bot.rest.edit_message(channel, gdata['config']['leaderboard_msg'], embed=embed)
                 return
             except:
                 pass
 
-        if config.get('leaderboard_msg'):
+        if gdata['config'].get('leaderboard_msg'):
             try:
-                await bot.rest.delete_message(channel, config['leaderboard_msg'])
+                await bot.rest.delete_message(channel, gdata['config']['leaderboard_msg'])
             except:
                 pass
 
         msg = await bot.rest.create_message(channel, embed=embed)
-        config['leaderboard_msg'] = msg.id
+        gdata['config']['leaderboard_msg'] = msg.id
         save_data()
-    except:
-        pass
+    except Exception as e:
+        print(f"Error updating leaderboard: {e}")
 
-async def update_leaderboard_loop():
+async def update_all_leaderboards():
     while True:
         await asyncio.sleep(300)
-        await update_leaderboard()
+        for guild_id in guild_data.keys():
+            await update_leaderboard(guild_id)
 
 @bot.command
 @lightbulb.option("price", "Coins per 1 USD", type=int)
@@ -526,15 +681,38 @@ async def set_price(ctx):
         await ctx.respond("Owner only.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
-    config['price_per_usd'] = ctx.options.price
+    gdata = get_guild_data(ctx.guild_id)
+    old_price = gdata['config']['price_per_usd']
+    new_price = ctx.options.price
+
+    # Add to price history if different
+    if old_price != new_price:
+        if 'price_history' not in gdata['config']:
+            gdata['config']['price_history'] = []
+
+        gdata['config']['price_history'].append({
+            'price': new_price,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        })
+
+        # Keep only last 20 price changes
+        if len(gdata['config']['price_history']) > 20:
+            gdata['config']['price_history'] = gdata['config']['price_history'][-20:]
+
+    gdata['config']['price_per_usd'] = new_price
     save_data()
-    await ctx.respond(f"Price set to {ctx.options.price} coins per $1", flags=hikari.MessageFlag.EPHEMERAL)
-    await update_redeem()
+
+    change = new_price - old_price
+    await ctx.respond(
+        f"Price updated: {old_price} → {new_price} coins per $1 ({change:+d} coins)",
+        flags=hikari.MessageFlag.EPHEMERAL
+    )
+    await update_redeem(ctx.guild_id)
 
 @bot.command
 @lightbulb.option("button_text", "Button text", required=False, default="Redeem")
 @lightbulb.option("button_color", "Button color", choices=["blue", "green", "red", "gray"], required=False, default="blue")
-@lightbulb.option("embed_color", "Hex color", required=False, default="5865F2")
+@lightbulb.option("embed_color", "Hex color or name", required=False, default="5865F2")
 @lightbulb.option("channel", "Channel for redeem", type=hikari.TextableGuildChannel)
 @lightbulb.command("setredeem", "Set redeem channel")
 @lightbulb.implements(lightbulb.SlashCommand)
@@ -544,69 +722,76 @@ async def set_redeem(ctx):
         await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
-    config['redeem_channel'] = ctx.options.channel.id
-    config['redeem_button_text'] = ctx.options.button_text
+    gdata = get_guild_data(ctx.guild_id)
+    gdata['config']['redeem_channel'] = ctx.options.channel.id
+    gdata['config']['redeem_button_text'] = ctx.options.button_text
 
     colors = {
-        "blue": hikari.ButtonStyle.PRIMARY,
-        "green": hikari.ButtonStyle.SUCCESS,
-        "red": hikari.ButtonStyle.DANGER,
-        "gray": hikari.ButtonStyle.SECONDARY
+        "blue": "PRIMARY",
+        "green": "SUCCESS",
+        "red": "DANGER",
+        "gray": "SECONDARY"
     }
-    config['redeem_button_color'] = colors.get(ctx.options.button_color, hikari.ButtonStyle.PRIMARY)
-
-    try:
-        config['redeem_color'] = int(ctx.options.embed_color, 16)
-    except:
-        config['redeem_color'] = 0x5865F2
+    gdata['config']['redeem_button_color'] = colors.get(ctx.options.button_color, "PRIMARY")
+    gdata['config']['redeem_color'] = parse_color(ctx.options.embed_color)
 
     save_data()
     await ctx.respond(f"Redeem set to {ctx.options.channel.mention}", flags=hikari.MessageFlag.EPHEMERAL)
-    await update_redeem()
+    await update_redeem(ctx.guild_id)
     await log_action(ctx, f"Set redeem channel to {ctx.options.channel.mention}")
 
-async def update_redeem():
-    if not config.get('redeem_channel'):
+async def update_redeem(guild_id):
+    gdata = get_guild_data(guild_id)
+    if not gdata['config'].get('redeem_channel'):
         return
 
-    chart = create_chart()
+    chart = create_chart(guild_id)
+    chart_bytes = chart.getvalue()
 
+    # Create embed with image reference
     embed = hikari.Embed(
         title="💎 Redeem Rewards",
-        description=f"Current rate: **{config['price_per_usd']}** coins = $1 USD\n\nClick the button below to redeem your coins for rewards!",
-        color=config['redeem_color']
+        description=f"Current rate: **{gdata['config']['price_per_usd']}** coins = $1 USD\n\nClick the button below to redeem your coins for rewards!",
+        color=gdata['config']['redeem_color']
     )
-    embed.set_image("attachment://chart.png")
-    embed.timestamp = datetime.now()
+    embed.set_image("attachment://price_chart.png")
+    embed.timestamp = datetime.now(timezone.utc)
 
     view = miru.View()
-    view.add_item(RedeemButton())
+    view.add_item(RedeemButton(guild_id))
 
-    channel = config['redeem_channel']
+    channel = gdata['config']['redeem_channel']
 
     try:
-        if config.get('redeem_msg'):
+        # Check if message exists and try to edit it
+        if gdata['config'].get('redeem_msg'):
             try:
-                await bot.rest.delete_message(channel, config['redeem_msg'])
+                # Delete old message and create new one (can't edit attachments)
+                await bot.rest.delete_message(channel, gdata['config']['redeem_msg'])
             except:
                 pass
 
+        # Create new message with chart attachment
         msg = await bot.rest.create_message(
             channel,
             embed=embed,
-            attachment=hikari.Bytes(chart, "chart.png"),
+            attachment=hikari.Bytes(chart_bytes, "price_chart.png"),
             components=view
         )
-        config['redeem_msg'] = msg.id
-        view.start(msg)
-        save_data()
-    except:
-        pass
 
-async def update_redeem_loop():
+        gdata['config']['redeem_msg'] = msg.id
+        miru_client.start_view(view, bind_to=msg)
+        save_data()
+    except Exception as e:
+        print(f"Error updating redeem: {e}")
+        import traceback
+        traceback.print_exc()
+
+async def update_all_redeems():
     while True:
         await asyncio.sleep(300)
-        await update_redeem()
+        for guild_id in guild_data.keys():
+            await update_redeem(guild_id)
 
 @bot.command
 @lightbulb.option("channel", "Channel for approvals", type=hikari.TextableGuildChannel)
@@ -618,7 +803,8 @@ async def set_approval(ctx):
         await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
-    config['approval_channel'] = ctx.options.channel.id
+    gdata = get_guild_data(ctx.guild_id)
+    gdata['config']['approval_channel'] = ctx.options.channel.id
     save_data()
     await ctx.respond(f"Approval set to {ctx.options.channel.mention}", flags=hikari.MessageFlag.EPHEMERAL)
     await log_action(ctx, f"Set approval channel to {ctx.options.channel.mention}")
@@ -635,19 +821,20 @@ async def manage_coins(ctx):
         await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
+    gdata = get_guild_data(ctx.guild_id)
     user = ctx.options.user
     amount = ctx.options.amount
     action = ctx.options.action
 
-    if user.id not in user_data:
-        user_data[user.id] = 0
+    if user.id not in gdata['users']:
+        gdata['users'][user.id] = 0
 
     if action == "add":
-        user_data[user.id] += amount
+        gdata['users'][user.id] += amount
         await ctx.respond(f"Added {amount} coins to {user.mention}", flags=hikari.MessageFlag.EPHEMERAL)
         await log_action(ctx, f"Added {amount} coins to {user.mention}")
     else:
-        user_data[user.id] = max(0, user_data[user.id] - amount)
+        gdata['users'][user.id] = max(0, gdata['users'][user.id] - amount)
         await ctx.respond(f"Removed {amount} coins from {user.mention}", flags=hikari.MessageFlag.EPHEMERAL)
         await log_action(ctx, f"Removed {amount} coins from {user.mention}")
 
@@ -663,17 +850,17 @@ async def ban_role(ctx):
         await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
-    global banned_role_id
-    banned_role_id = ctx.options.role.id
+    gdata = get_guild_data(ctx.guild_id)
+    gdata['banned_role'] = ctx.options.role.id
 
     guild = await bot.rest.fetch_guild(ctx.guild_id)
     members = bot.cache.get_members_view_for_guild(guild.id)
 
     for member_id in list(members.keys()):
-        member = members[member_id]
-        if banned_role_id in member.role_ids:
-            if member_id in user_data:
-                del user_data[member_id]
+        member_obj = members[member_id]
+        if gdata['banned_role'] in member_obj.role_ids:
+            if member_id in gdata['users']:
+                del gdata['users'][member_id]
 
     save_data()
     await ctx.respond(f"Banned role set to {ctx.options.role.mention}", flags=hikari.MessageFlag.EPHEMERAL)
@@ -692,34 +879,129 @@ async def restore(ctx):
     type_choice = ctx.options.type
 
     if type_choice == "leaderboard":
-        await update_leaderboard()
+        await update_leaderboard(ctx.guild_id)
         await ctx.respond("Leaderboard restored.", flags=hikari.MessageFlag.EPHEMERAL)
     else:
-        await update_redeem()
+        await update_redeem(ctx.guild_id)
         await ctx.respond("Redeem embed restored.", flags=hikari.MessageFlag.EPHEMERAL)
 
     await log_action(ctx, f"Restored {type_choice} embed")
 
+def image_to_data_uri(image_data):
+    """Convert image bytes to Discord-compatible base64 data URI"""
+    encoded = base64.b64encode(image_data).decode('ascii')
+    # Detect image type
+    if image_data.startswith(b'\x89PNG'):
+        mime = 'image/png'
+    elif image_data.startswith(b'\xff\xd8\xff'):
+        mime = 'image/jpeg'
+    elif image_data.startswith(b'GIF'):
+        mime = 'image/gif'
+    elif image_data.startswith(b'WEBP', 8):
+        mime = 'image/webp'
+    else:
+        mime = 'image/png'  # default
+    return f'data:{mime};base64,{encoded}'
+
 @bot.command
-@lightbulb.option("image", "Image URL or attachment", type=hikari.Attachment)
-@lightbulb.command("setpfp", "Change bot avatar")
+@lightbulb.option("user", "User to copy avatar from", type=hikari.User, required=False)
+@lightbulb.option("image", "Image URL or attachment", type=hikari.Attachment, required=False)
+@lightbulb.option("action", "What to do", choices=["set_from_attachment", "set_from_user", "remove"])
+@lightbulb.command("setpfp", "Change bot avatar (Owner only)")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def set_pfp(ctx):
-    member = ctx.member
-    if MOD_ROLE_ID not in member.role_ids and ctx.user.id != OWNER_ID:
-        await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
+    if ctx.user.id != OWNER_ID:
+        await ctx.respond("Owner only.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
-    attachment = ctx.options.image
+    action = ctx.options.action
 
-    async with bot.d.session.get(attachment.url) as resp:
-        if resp.status == 200:
-            data = await resp.read()
-            await bot.rest.edit_my_user(avatar=data)
-            await ctx.respond("Avatar updated.", flags=hikari.MessageFlag.EPHEMERAL)
-            await log_action(ctx, "Changed bot avatar")
-        else:
-            await ctx.respond("Failed to download image.", flags=hikari.MessageFlag.EPHEMERAL)
+    if action == "remove":
+        await bot.rest.edit_my_user(avatar=None)
+        await ctx.respond("Avatar removed.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+
+    if action == "set_from_user":
+        user = ctx.options.user
+        if not user:
+            await ctx.respond("Please specify a user.", flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        avatar_url = user.avatar_url or user.default_avatar_url
+        async with bot.d.session.get(str(avatar_url)) as resp:
+            if resp.status == 200:
+                data = await resp.read()
+                data_uri = image_to_data_uri(data)
+                await bot.rest.edit_my_user(avatar=data_uri)
+                await ctx.respond(f"Avatar set from {user.mention}", flags=hikari.MessageFlag.EPHEMERAL)
+            else:
+                await ctx.respond("Failed to download avatar.", flags=hikari.MessageFlag.EPHEMERAL)
+    else:
+        attachment = ctx.options.image
+        if not attachment:
+            await ctx.respond("Please provide an image.", flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        async with bot.d.session.get(attachment.url) as resp:
+            if resp.status == 200:
+                data = await resp.read()
+                data_uri = image_to_data_uri(data)
+                await bot.rest.edit_my_user(avatar=data_uri)
+                await ctx.respond("Avatar updated.", flags=hikari.MessageFlag.EPHEMERAL)
+            else:
+                await ctx.respond("Failed to download image.", flags=hikari.MessageFlag.EPHEMERAL)
+
+@bot.command
+@lightbulb.option("user", "User to copy banner from", type=hikari.User, required=False)
+@lightbulb.option("image", "Image URL or attachment", type=hikari.Attachment, required=False)
+@lightbulb.option("action", "What to do", choices=["set_from_attachment", "set_from_user", "remove"])
+@lightbulb.command("setbanner", "Change bot banner (Owner only)")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def set_banner(ctx):
+    if ctx.user.id != OWNER_ID:
+        await ctx.respond("Owner only.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+
+    action = ctx.options.action
+
+    if action == "remove":
+        await bot.rest.edit_my_user(banner=None)
+        await ctx.respond("Banner removed.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+
+    if action == "set_from_user":
+        user = ctx.options.user
+        if not user:
+            await ctx.respond("Please specify a user.", flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        user_full = await bot.rest.fetch_user(user.id)
+        if not user_full.banner_url:
+            await ctx.respond("User doesn't have a banner.", flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        async with bot.d.session.get(str(user_full.banner_url)) as resp:
+            if resp.status == 200:
+                data = await resp.read()
+                data_uri = image_to_data_uri(data)
+                await bot.rest.edit_my_user(banner=data_uri)
+                await ctx.respond(f"Banner set from {user.mention}", flags=hikari.MessageFlag.EPHEMERAL)
+            else:
+                await ctx.respond("Failed to download banner.", flags=hikari.MessageFlag.EPHEMERAL)
+    else:
+        attachment = ctx.options.image
+        if not attachment:
+            await ctx.respond("Please provide an image.", flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        async with bot.d.session.get(attachment.url) as resp:
+            if resp.status == 200:
+                data = await resp.read()
+                data_uri = image_to_data_uri(data)
+                await bot.rest.edit_my_user(banner=data_uri)
+                await ctx.respond("Banner updated.", flags=hikari.MessageFlag.EPHEMERAL)
+            else:
+                await ctx.respond("Failed to download image.", flags=hikari.MessageFlag.EPHEMERAL)
 
 @bot.command
 @lightbulb.command("help", "Show commands")
@@ -734,12 +1016,12 @@ async def help_cmd(ctx):
     user_cmds = "• `/daily` - Claim daily reward\n• `/balance` - Check your coins\n• `/help` - Show this menu"
 
     if is_owner or is_mod:
-        mod_cmds = "• `/uncounted` - Manage uncounted channels\n• `/setleaderboard` - Set leaderboard\n• `/setredeem` - Set redeem embed\n• `/setapproval` - Set approval channel\n• `/coins` - Manage user coins\n• `/banrole` - Set banned role\n• `/restore` - Restore embeds\n• `/setpfp` - Change bot avatar\n• `/setlog` - Set log channel"
+        mod_cmds = "• `/uncounted` - Manage uncounted channels\n• `/setleaderboard` - Set leaderboard\n• `/setredeem` - Set redeem embed\n• `/setapproval` - Set approval channel\n• `/coins` - Manage user coins\n• `/banrole` - Set banned role\n• `/restore` - Restore embeds\n• `/setlog` - Set log channel\n• `/ping` - Check latency"
         embed.add_field("User Commands", user_cmds, inline=False)
         embed.add_field("Moderator Commands", mod_cmds, inline=False)
 
         if is_owner:
-            owner_cmds = "• `/setprice` - Set reward prices"
+            owner_cmds = "• `/setprice` - Set reward prices\n• `/setpfp` - Change bot avatar\n• `/setbanner` - Change bot banner"
             embed.add_field("Owner Commands", owner_cmds, inline=False)
     else:
         embed.description = user_cmds
@@ -756,12 +1038,14 @@ async def set_log(ctx):
         await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
-    config['log_channel'] = ctx.options.channel.id
+    gdata = get_guild_data(ctx.guild_id)
+    gdata['config']['log_channel'] = ctx.options.channel.id
     save_data()
     await ctx.respond(f"Log channel set to {ctx.options.channel.mention}", flags=hikari.MessageFlag.EPHEMERAL)
 
 async def log_action(ctx, action):
-    if not config.get('log_channel'):
+    gdata = get_guild_data(ctx.guild_id)
+    if not gdata['config'].get('log_channel'):
         return
 
     embed = hikari.Embed(
@@ -770,10 +1054,10 @@ async def log_action(ctx, action):
         color=0xFFAA00
     )
     embed.add_field("Moderator", f"<@{ctx.user.id}>", inline=True)
-    embed.timestamp = datetime.now()
+    embed.timestamp = datetime.now(timezone.utc)
 
     try:
-        await bot.rest.create_message(config['log_channel'], embed=embed)
+        await bot.rest.create_message(gdata['config']['log_channel'], embed=embed)
     except:
         pass
 
@@ -790,23 +1074,61 @@ async def ping_cmd(ctx):
 @lightbulb.implements(lightbulb.SlashCommand)
 async def balance_cmd(ctx):
     user = ctx.options.user or ctx.user
+    gdata = get_guild_data(ctx.guild_id)
 
     if user.id != ctx.user.id:
         member = ctx.member
-        if member and is_banned(member):
+        if member and is_banned(ctx.guild_id, member):
             await ctx.respond("You're banned.", flags=hikari.MessageFlag.EPHEMERAL)
             return
 
-    balance = user_data.get(user.id, 0)
-    streak = streaks.get(user.id, 0)
-    mult = get_streak_mult(user.id)
+    # Fetch member to check booster status
+    try:
+        target_member = await bot.rest.fetch_member(ctx.guild_id, user.id)
+    except:
+        target_member = None
+
+    balance = gdata['users'].get(user.id, 0)
+    streak = gdata['streaks'].get(user.id, 0)
+    streak_mult = get_streak_mult(ctx.guild_id, user.id)
+    usd_value = balance / gdata['config']['price_per_usd']
+    is_boosting = is_booster(target_member)
+
+    # Calculate total multiplier
+    total_mult = streak_mult * (2 if is_boosting else 1)
+
+    # Get today's earnings and limit
+    today = datetime.now(timezone.utc).date()
+    daily_key = f"{user.id}_{today}"
+    today_earned = gdata['daily_earnings'].get(daily_key, 0)
+    daily_limit = 400 if is_boosting else 200
 
     embed = hikari.Embed(title=f"💰 {user.username}'s Wallet", color=0xFFD700)
     embed.add_field("Balance", f"{balance} coins", inline=True)
-    embed.add_field("Streak", f"{streak} days (x{mult})", inline=True)
+    embed.add_field("USD Value", f"${usd_value:.2f}", inline=True)
+
+    multiplier_text = f"{streak} days (x{streak_mult})"
+    if is_boosting:
+        multiplier_text += f"\n**Booster Bonus: x2**\n**Total: x{total_mult}**"
+    embed.add_field("Streak", multiplier_text, inline=True)
+
+    embed.add_field("Today's Earnings", f"{today_earned}/{daily_limit} coins", inline=True)
+
+    # Set footer with boost status (use emoji icon URL for custom emojis)
+    if is_boosting:
+        embed.set_footer(
+            text=f"Server Booster | {gdata['config']['price_per_usd']} coins = $1 USD",
+            icon="https://cdn.discordapp.com/emojis/1470167258603982900.png"
+        )
+    else:
+        embed.set_footer(
+            text=f"Not Booster | {gdata['config']['price_per_usd']} coins = $1 USD",
+            icon="https://cdn.discordapp.com/emojis/1470170009568542720.png"
+        )
+
     embed.set_thumbnail(user.avatar_url or user.default_avatar_url)
 
-    await ctx.respond(embed=embed, flags=hikari.MessageFlag.EPHEMERAL)
+    await ctx.respond(embed=embed)
 
 if __name__ == "__main__":
     bot.run()
