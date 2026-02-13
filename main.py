@@ -45,7 +45,7 @@ bot = lightbulb.BotApp(
 
 miru_client = miru.Client(bot)
 
-OWNER_ID = 867623049741860874
+OWNER_ID = 823310792291385424
 MOD_ROLE_ID = 1373312465626202222
 
 guild_data = {}
@@ -792,7 +792,7 @@ async def update_redeem(guild_id):
         msg = await bot.rest.create_message(
             channel,
             embed=embed,
-            attachment=hikari.Bytes(chart_bytes, "price_chart.png"),
+            attachments=[hikari.Bytes(chart_bytes, "price_chart.png")],
             components=view
         )
 
