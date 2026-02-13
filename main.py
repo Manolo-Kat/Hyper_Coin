@@ -1150,12 +1150,12 @@ async def balance_cmd(ctx):
     if is_boosting:
         embed.set_footer(
             text=f"Server Booster | {price_per_usd} coins = $1 USD",
-            icon="https://cdn.discordapp.com/emojis/1470167258603982900.png"
+            icon="https://cdn.discordapp.com/emojis/1040304561066119188.png"
         )
     else:
         embed.set_footer(
             text=f"Not Booster | {price_per_usd} coins = $1 USD",
-            icon="https://cdn.discordapp.com/emojis/1470170009568542720.png"
+            icon="https://cdn.discordapp.com/emojis/1040304561066119188.png"
         )
 
     embed.set_thumbnail(user.avatar_url or user.default_avatar_url)
