@@ -724,7 +724,8 @@ async def set_price(ctx):
         f"Price updated: {old_price} → {new_price} coins per $1 ({change:+d} coins)",
         flags=hikari.MessageFlag.EPHEMERAL
     )
-    await update_redeem(ctx.guild_id)
+    # Background task will handle it or we can trigger it manually
+    asyncio.create_task(update_redeem(ctx.guild_id))
 
 @bot.command
 @lightbulb.option("button_text", "Button text", required=False, default="Redeem")
