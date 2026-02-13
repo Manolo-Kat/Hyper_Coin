@@ -764,10 +764,8 @@ async def update_redeem(guild_id):
         return
 
     try:
-        chart = create_chart(guild_id)
-        chart_bytes = chart.getvalue()
+        chart_buf = create_chart(guild_id)
 
-        # Create embed with image reference
         embed = hikari.Embed(
             title="💎 Redeem Rewards",
             description=f"Current rate: **{gdata['config']['price_per_usd']}** coins = $1 USD\n\nClick the button below to redeem your coins for rewards!",
@@ -781,19 +779,16 @@ async def update_redeem(guild_id):
 
         channel = gdata['config']['redeem_channel']
 
-        # Check if message exists and try to edit it
         if gdata['config'].get('redeem_msg'):
             try:
-                # Delete old message and create new one (can't edit attachments)
                 await bot.rest.delete_message(channel, gdata['config']['redeem_msg'])
             except:
                 pass
 
-        # Create new message with chart attachment
         msg = await bot.rest.create_message(
             channel,
             embed=embed,
-            attachments=[hikari.Bytes(chart_bytes, "price_chart.png")],
+            attachment=hikari.Bytes(chart_buf.read(), "price_chart.png"),
             components=view
         )
 
