@@ -24,7 +24,12 @@
             "approval_channel": null,
             "price_per_usd": 100,
             "log_channel": null,
-            "price_history": []
+            "price_history": [
+                {
+                    "price": 100,
+                    "timestamp": "2026-02-13T12:19:55.374113+00:00"
+                }
+            ]
         }
     }
 }
