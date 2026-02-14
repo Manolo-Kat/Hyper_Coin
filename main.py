@@ -570,7 +570,7 @@ async def drop_cmd(ctx):
     
     msg = await bot.rest.create_message(channel.id, embed=embed, components=view)
     view.message = msg
-    await miru_client.start_view(view, bind_to=msg)
+    miru_client.start_view(view, bind_to=msg)
     await ctx.respond(f"Drop created in {channel.mention}!", flags=hikari.MessageFlag.EPHEMERAL)
 
 @bot.command
@@ -746,6 +746,7 @@ async def set_price(ctx):
 
     # Add to price history if different
     if old_price != new_price:
+        gdata['config']['price_per_usd'] = new_price
         if 'price_history' not in gdata['config']:
             gdata['config']['price_history'] = []
 
@@ -754,20 +755,20 @@ async def set_price(ctx):
             'timestamp': datetime.now(timezone.utc).isoformat()
         })
 
-        # Keep only last 20 price changes
+        # Keep only last 20 price changes for performance
         if len(gdata['config']['price_history']) > 20:
             gdata['config']['price_history'] = gdata['config']['price_history'][-20:]
 
-    gdata['config']['price_per_usd'] = new_price
-    await save_data()
-
-    change = new_price - old_price
-    await ctx.respond(
-        f"Price updated: {old_price} → {new_price} coins per $1 ({change:+d} coins)",
-        flags=hikari.MessageFlag.EPHEMERAL
-    )
-    # Background task will handle it or we can trigger it manually
-    asyncio.create_task(update_redeem(ctx.guild_id))
+        await save_data()
+        await update_redeem(ctx.guild_id)
+        change = new_price - old_price
+        await ctx.respond(
+            f"Price updated: {old_price} → {new_price} coins per $1 ({change:+d} coins)",
+            flags=hikari.MessageFlag.EPHEMERAL
+        )
+    else:
+        await ctx.respond("Price is already set to this value.", flags=hikari.MessageFlag.EPHEMERAL)
+    return
 
 @bot.command
 @lightbulb.option("button_text", "Button text", required=False, default="Redeem")
@@ -834,7 +835,7 @@ async def update_redeem(guild_id):
         )
 
         gdata['config']['redeem_msg'] = msg.id
-        await miru_client.start_view(view, bind_to=msg)
+        miru_client.start_view(view, bind_to=msg)
         await save_data()
     except Exception as e:
         logger.error(f"Error updating redeem: {e}")
