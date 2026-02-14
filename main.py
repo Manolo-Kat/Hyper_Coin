@@ -526,12 +526,12 @@ async def drop_cmd(ctx):
             self.price = price
             self.guild_id = guild_id
             self.claimed = False
-            self.message = None
+            self._drop_message = None
 
         async def on_timeout(self):
-            if not self.claimed and self.action == "take" and self.message:
+            if not self.claimed and self.action == "take" and self._drop_message:
                 try:
-                    await self.message.delete()
+                    await self._drop_message.delete()
                 except:
                     pass
 
@@ -569,7 +569,7 @@ async def drop_cmd(ctx):
     )
     
     msg = await bot.rest.create_message(channel.id, embed=embed, components=view)
-    view.message = msg
+    view._drop_message = msg
     miru_client.start_view(view, bind_to=msg)
     await ctx.respond(f"Drop created in {channel.mention}!", flags=hikari.MessageFlag.EPHEMERAL)
 
