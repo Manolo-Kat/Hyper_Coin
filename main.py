@@ -712,7 +712,7 @@ async def update_leaderboard(guild_id):
 
 async def update_all_leaderboards():
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(600)
         for guild_id in list(guild_data.keys()):
             try:
                 await update_leaderboard(guild_id)
@@ -829,7 +829,7 @@ async def update_redeem(guild_id):
 
 async def update_all_redeems():
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(900)
         for guild_id in list(guild_data.keys()):
             try:
                 await update_redeem(guild_id)
