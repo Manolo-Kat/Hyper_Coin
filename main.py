@@ -55,7 +55,6 @@ def get_guild_data(guild_id):
         guild_data[guild_id] = {
             'users': {},
             'cooldowns': {},
-            'voice_times': {},
             'daily_earnings': defaultdict(int),
             'last_daily': {},
             'streaks': {},
@@ -90,7 +89,6 @@ def load_data():
                     guild_data[guild_id] = {
                         'users': {int(k): v for k, v in gdata.get('users', {}).items()},
                         'cooldowns': {},
-                        'voice_times': {},
                         'daily_earnings': defaultdict(int),
                         'last_daily': {int(k): datetime.fromisoformat(v) for k, v in gdata.get('daily', {}).items()},
                         'streaks': {int(k): v for k, v in gdata.get('streaks', {}).items()},
@@ -505,31 +503,63 @@ async def on_message(event):
     check_streak(event.guild_id, user_id)
     await add_coins(event.guild_id, user_id, 5, member)
 
-@bot.listen(hikari.VoiceStateUpdateEvent)
-async def on_voice(event):
-    if event.state.member.is_bot:
+@bot.command
+@lightbulb.option("price", "Price to give or take", type=int)
+@lightbulb.option("channel", "Channel to drop in", type=hikari.TextableGuildChannel)
+@lightbulb.option("action", "take or give", choices=["take", "give"])
+@lightbulb.command("drop", "Drop coins in a channel")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def drop_cmd(ctx):
+    member = ctx.member
+    if MOD_ROLE_ID not in member.role_ids and ctx.user.id != OWNER_ID:
+        await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
-    gdata = get_guild_data(event.state.guild_id)
+    action = ctx.options.action
+    channel = ctx.options.channel
+    price = ctx.options.price
 
-    if event.state.channel_id and event.state.channel_id in gdata['uncounted']:
-        return
+    class DropView(miru.View):
+        def __init__(self, action, price, guild_id):
+            super().__init__(timeout=300)
+            self.action = action
+            self.price = price
+            self.guild_id = guild_id
+            self.claimed = False
 
-    if is_banned(event.state.guild_id, event.state.member):
-        return
+        @miru.button(label="Claim", style=hikari.ButtonStyle.SUCCESS if action == "give" else hikari.ButtonStyle.DANGER)
+        async def claim_btn(self, ctx: miru.ViewContext, button: miru.Button):
+            if self.claimed:
+                return
 
-    user_id = event.state.user_id
+            if is_banned(self.guild_id, ctx.member):
+                await ctx.respond("You are banned from using this bot.", flags=hikari.MessageFlag.EPHEMERAL)
+                return
 
-    if event.state.channel_id and not event.old_state:
-        gdata['voice_times'][user_id] = datetime.now(timezone.utc)
-    elif not event.state.channel_id and event.old_state:
-        if user_id in gdata['voice_times']:
-            duration = (datetime.now(timezone.utc) - gdata['voice_times'][user_id]).total_seconds()
-            hours = duration / 3600
-            coins = int(hours * 20)
-            check_streak(event.state.guild_id, user_id)
-            await add_coins(event.state.guild_id, user_id, coins, event.state.member)
-            del gdata['voice_times'][user_id]
+            self.claimed = True
+            self.stop()
+            
+            gdata = get_guild_data(self.guild_id)
+            if self.action == "give":
+                gdata['users'][ctx.user.id] = gdata['users'].get(ctx.user.id, 0) + self.price
+                msg = f"Claimed! {self.price} coins have been added to your balance."
+            else:
+                gdata['users'][ctx.user.id] = max(0, gdata['users'].get(ctx.user.id, 0) - self.price)
+                msg = f"Oh no! {self.price} coins have been taken from your balance."
+
+            await save_data()
+            await ctx.edit_response(f"Drop claimed by <@{ctx.user.id}>! {msg}", components=[])
+
+    view = DropView(action, price, ctx.guild_id)
+    embed = hikari.Embed(
+        title="💰 Coin Drop!",
+        description=f"Action: **{action.upper()}**\nAmount: **{price}** coins\n\nBe the first to click the button below!",
+        color=0x00FF00 if action == "give" else 0xFF0000
+    )
+    
+    msg = await bot.rest.create_message(channel.id, embed=embed, components=view)
+    await miru_client.start_view(view, bind_to=msg)
+    await ctx.respond(f"Drop created in {channel.mention}!", flags=hikari.MessageFlag.EPHEMERAL)
 
 @bot.command
 @lightbulb.command("daily", "Claim your daily reward")
@@ -771,7 +801,6 @@ async def update_redeem(guild_id):
             description=f"Current rate: **{gdata['config']['price_per_usd']}** coins = $1 USD\n\nClick the button below to redeem your coins for rewards!",
             color=gdata['config']['redeem_color']
         )
-        embed.set_image("attachment://price_chart.png")
         embed.timestamp = datetime.now(timezone.utc)
 
         view = miru.View()
