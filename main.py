@@ -521,13 +521,21 @@ async def drop_cmd(ctx):
 
     class DropView(miru.View):
         def __init__(self, action, price, guild_id):
-            super().__init__(timeout=300)
+            super().__init__(timeout=180 if action == "take" else None)
             self.action = action
             self.price = price
             self.guild_id = guild_id
             self.claimed = False
+            self.message = None
 
-        @miru.button(label="Claim", style=hikari.ButtonStyle.SUCCESS if action == "give" else hikari.ButtonStyle.DANGER)
+        async def on_timeout(self):
+            if not self.claimed and self.action == "take" and self.message:
+                try:
+                    await self.message.delete()
+                except:
+                    pass
+
+        @miru.button(label="Free Coins", style=hikari.ButtonStyle.SUCCESS if action == "give" else hikari.ButtonStyle.DANGER)
         async def claim_btn(self, ctx: miru.ViewContext, button: miru.Button):
             if self.claimed:
                 return
@@ -542,13 +550,16 @@ async def drop_cmd(ctx):
             gdata = get_guild_data(self.guild_id)
             if self.action == "give":
                 gdata['users'][ctx.user.id] = gdata['users'].get(ctx.user.id, 0) + self.price
-                msg = f"Claimed! {self.price} coins have been added to your balance."
+                response_msg = f"Congrats <@{ctx.user.id}>! You won **{self.price} coins**!"
             else:
                 gdata['users'][ctx.user.id] = max(0, gdata['users'].get(ctx.user.id, 0) - self.price)
-                msg = f"Oh no! {self.price} coins have been taken from your balance."
+                response_msg = f"Too bad <@{ctx.user.id}>! You lost **{self.price} coins**. Focus next time!"
 
             await save_data()
-            await ctx.edit_response(f"Drop claimed by <@{ctx.user.id}>! {msg}", components=[])
+            
+            embed = ctx.message.embeds[0]
+            embed.description = f"Action: **{self.action.upper()}**\nAmount: **{self.price}** coins\n\nClaimed by: <@{ctx.user.id}>"
+            await ctx.edit_response(content=response_msg, embed=embed, components=[])
 
     view = DropView(action, price, ctx.guild_id)
     embed = hikari.Embed(
@@ -558,6 +569,7 @@ async def drop_cmd(ctx):
     )
     
     msg = await bot.rest.create_message(channel.id, embed=embed, components=view)
+    view.message = msg
     await miru_client.start_view(view, bind_to=msg)
     await ctx.respond(f"Drop created in {channel.mention}!", flags=hikari.MessageFlag.EPHEMERAL)
 
@@ -801,6 +813,7 @@ async def update_redeem(guild_id):
             description=f"Current rate: **{gdata['config']['price_per_usd']}** coins = $1 USD\n\nClick the button below to redeem your coins for rewards!",
             color=gdata['config']['redeem_color']
         )
+        embed.set_image(hikari.Bytes(chart_buf.read(), "price_chart.png"))
         embed.timestamp = datetime.now(timezone.utc)
 
         view = miru.View()
@@ -817,7 +830,6 @@ async def update_redeem(guild_id):
         msg = await bot.rest.create_message(
             channel,
             embed=embed,
-            attachment=hikari.Bytes(chart_buf.read(), "price_chart.png"),
             components=view
         )
 
