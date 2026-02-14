@@ -724,12 +724,12 @@ async def update_leaderboard(guild_id):
 
 async def update_all_leaderboards():
     while True:
-        await asyncio.sleep(600)
+        await asyncio.sleep(1200)
         for guild_id in list(guild_data.keys()):
             try:
                 await update_leaderboard(guild_id)
-            except Exception as e:
-                logger.error(f"Failed to update leaderboard for {guild_id}: {e}")
+            except:
+                pass
 
 @bot.command
 @lightbulb.option("price", "Coins per 1 USD", type=int)
@@ -841,12 +841,12 @@ async def update_redeem(guild_id):
 
 async def update_all_redeems():
     while True:
-        await asyncio.sleep(900)
+        await asyncio.sleep(1800)
         for guild_id in list(guild_data.keys()):
             try:
                 await update_redeem(guild_id)
-            except Exception as e:
-                logger.error(f"Failed to update redeem for {guild_id}: {e}")
+            except:
+                pass
 
 @bot.command
 @lightbulb.option("channel", "Channel for approvals", type=hikari.TextableGuildChannel)
