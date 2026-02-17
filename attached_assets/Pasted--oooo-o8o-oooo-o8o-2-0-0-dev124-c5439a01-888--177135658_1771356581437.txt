@@ -1,0 +1,48 @@
+
+  oooo         o8o  oooo                            o8o       光 2.0.0.dev124 [c5439a01]
+  `888         `"'  `888                            `"'       © 2021-present, davfsa - MIT license
+   888 .oo.   oooo   888  oooo   .oooo.   oooo d8b oooo       interpreter:   CPython 3.11.14
+   888P"Y88b  `888   888 .8P'   `P  )88b  `888""8P `888       running on:    x86_64 Linux 6.14.11
+   888   888   888   888888.     .oP"888   888      888       installed at:  /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/hikari
+   888   888   888   888 `88b.  d8(  888   888      888       documentation: https://docs.hikari-py.dev/en/2.0.0.dev124
+  o888o o888o o888o o888o o888o `Y888""8o d888b    o888o      support:       https://discord.gg/Jx4cNGG
+
+Thank you for using lightbulb!
+2026-02-17 19:25:18,769 - hikari.ux - WARNING - You are running on optimization level 0 (no optimizations), which may slow down your application. For production, consider using at least level 1 optimization by passing `-O` to the python interpreter call
+2026-02-17 19:25:18,829 - hikari.ux - INFO - A newer version of hikari is available, consider upgrading to 2.5.0
+2026-02-17 19:25:19,061 - hikari.bot - INFO - you can start 998 sessions before the next window which starts at 2026-02-18 19:20:53.941170+00:00; planning to start 1 session... 
+2026-02-17 19:25:19,197 - hikari.gateway.0 - INFO - identifying with new session
+2026-02-17 19:25:19,414 - hikari.gateway.0 - INFO - shard is ready: 1 guilds, Hyper_Coin Beta#0594 (1471282047371972731), session 'af398d5236eb48a50a8d894d4d39599f' on v10 gateway
+2026-02-17 19:25:19,418 - DiscordBot - INFO - Data loaded successfully
+2026-02-17 19:25:19,420 - DiscordBot - INFO - Bot started successfully
+2026-02-17 19:25:19,732 - lightbulb.internal - INFO - Processing guild application commands
+2026-02-17 19:25:19,732 - lightbulb.internal - INFO - Processing global application commands
+2026-02-17 19:25:19,898 - lightbulb.internal - INFO - Application command processing completed
+2026-02-17 19:25:19,898 - hikari.bot - INFO - started successfully in approx 1.12 seconds
+2026-02-17 19:26:22,897 - py.warnings - WARNING - /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/aiohttp/formdata.py:93: DeprecationWarning: content_transfer_encoding is deprecated. To maintain compatibility with v4 please pass a BytesPayload.
+  warnings.warn(msg, DeprecationWarning)
+
+2026-02-17 19:26:45,328 - py.warnings - WARNING - /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/aiohttp/formdata.py:93: DeprecationWarning: content_transfer_encoding is deprecated. To maintain compatibility with v4 please pass a BytesPayload.
+  warnings.warn(msg, DeprecationWarning)
+
+Ignoring exception in modal <__main__.RedeemModal object at 0x7f6c913a1bd0>:
+Traceback (most recent call last):
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/miru/modal.py", line 202, in _handle_callback
+    await self.callback(context)
+  File "/home/runner/workspace/main.py", line 342, in callback
+    await miru_client.start_view(view, bind_to=msg)
+TypeError: object NoneType can't be used in 'await' expression
+Ignoring exception in modal <__main__.RedeemModal object at 0x7f6c913a1bd0>:
+Traceback (most recent call last):
+  File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/miru/modal.py", line 202, in _handle_callback
+    await self.callback(context)
+  File "/home/runner/workspace/main.py", line 342, in callback
+    await miru_client.start_view(view, bind_to=msg)
+TypeError: object NoneType can't be used in 'await' expression
+^A^C2026-02-17 19:29:20,695 - hikari.bot - INFO - bot requested to shut down
+2026-02-17 19:29:20,697 - DiscordBot - INFO - Bot stopped and data saved
+2026-02-17 19:29:20,698 - hikari.gateway.0 - INFO - shard has been requested to shutdown
+2026-02-17 19:29:20,950 - hikari.gateway.0 - INFO - shard shutdown successfully
+2026-02-17 19:29:20,951 - hikari.bot - INFO - bot shut down successfully
+2026-02-17 19:29:20,951 - hikari.bot - WARNING - terminating 3 remaining tasks forcefully
+2026-02-17 19:29:20,952 - hikari.bot - INFO - successfully terminated
