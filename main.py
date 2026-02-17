@@ -872,40 +872,50 @@ async def exchange_cmd(ctx):
     usd_value = amount / price_per_usd if price_per_usd != 0 else 0
     
     try:
+        # First try Frankfurter API
         async with bot.d.session.get(f"https://api.frankfurter.dev/v1/latest?base=USD&symbols={target_currency}") as resp:
             if resp.status == 200:
                 data = await resp.json()
                 rate = data['rates'].get(target_currency)
                 if rate:
-                    converted_value = usd_value * rate
-                    
-                    # Common symbols, fallback to currency code
-                    symbols = {
-                        "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CNY": "¥", 
-                        "EGP": "EGP ", "SAR": "SAR ", "BRL": "R$", "CAD": "C$", 
-                        "AUD": "A$", "CHF": "CHF ", "HKD": "HK$", "INR": "₹",
-                        "TRY": "₺", "ZAR": "R", "ILS": "₪", "KRW": "₩"
-                    }
-                    symbol = symbols.get(target_currency, f"{target_currency} ")
-                    
-                    embed = hikari.Embed(
-                        title="💱 Currency Exchange",
-                        color=0x00FF00,
-                        description=f"**{amount} coins** is approximately:"
-                    )
-                    embed.add_field("USD Value", f"${usd_value:.2f}", inline=True)
-                    embed.add_field(f"{target_currency} Value", f"{symbol}{converted_value:.2f}", inline=True)
-                    embed.set_footer(text=f"Live Rate: 1 USD = {rate} {target_currency}")
-                    await ctx.respond(embed=embed)
-                else:
-                    await ctx.respond(f"Could not find exchange rate for **{target_currency}**. Please check the currency code (e.g., USD, EGP, SAR, EUR).", flags=hikari.MessageFlag.EPHEMERAL)
-            elif resp.status == 404:
-                 await ctx.respond(f"Invalid currency code: **{target_currency}**. Please use a valid 3-letter currency code (e.g. EGP, SAR, USD).", flags=hikari.MessageFlag.EPHEMERAL)
-            else:
-                await ctx.respond("Failed to fetch exchange rates. The service might be down.", flags=hikari.MessageFlag.EPHEMERAL)
+                    await process_exchange_result(ctx, amount, usd_value, target_currency, rate)
+                    return
+            
+        # Fallback to ExchangeRate-API (better support for EGP/SAR)
+        async with bot.d.session.get(f"https://open.er-api.com/v6/latest/USD") as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data.get("result") == "success":
+                    rate = data['rates'].get(target_currency)
+                    if rate:
+                        await process_exchange_result(ctx, amount, usd_value, target_currency, rate)
+                        return
+        
+        await ctx.respond(f"Could not find exchange rate for **{target_currency}**. Please check the currency code (e.g., USD, EGP, SAR, EUR).", flags=hikari.MessageFlag.EPHEMERAL)
     except Exception as e:
         logger.error(f"Exchange error: {e}")
-        await ctx.respond("An error occurred while connecting to the exchange rate service.", flags=hikari.MessageFlag.EPHEMERAL)
+        await ctx.respond("An error occurred while fetching exchange rates.", flags=hikari.MessageFlag.EPHEMERAL)
+
+async def process_exchange_result(ctx, amount, usd_value, target_currency, rate):
+    converted_value = usd_value * rate
+    # Common symbols
+    symbols = {
+        "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CNY": "¥", 
+        "EGP": "EGP ", "SAR": "SAR ", "BRL": "R$", "CAD": "C$", 
+        "AUD": "A$", "CHF": "CHF ", "HKD": "HK$", "INR": "₹",
+        "TRY": "₺", "ZAR": "R", "ILS": "₪", "KRW": "₩"
+    }
+    symbol = symbols.get(target_currency, f"{target_currency} ")
+    
+    embed = hikari.Embed(
+        title="💱 Currency Exchange",
+        color=0x00FF00,
+        description=f"**{amount} coins** is approximately:"
+    )
+    embed.add_field("USD Value", f"${usd_value:.2f}", inline=True)
+    embed.add_field(f"{target_currency} Value", f"{symbol}{converted_value:.2f}", inline=True)
+    embed.set_footer(text=f"Live Rate: 1 USD = {rate} {target_currency}")
+    await ctx.respond(embed=embed)
 
 @bot.command
 @lightbulb.option("channel", "Channel for approvals", type=hikari.TextableGuildChannel)
