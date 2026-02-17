@@ -339,7 +339,7 @@ class RedeemModal(miru.Modal):
         channel = gdata['config'].get('approval_channel')
         if channel:
             msg = await bot.rest.create_message(channel, embed=embed, components=view)
-            await miru_client.start_view(view, bind_to=msg)
+            miru_client.start_view(view, bind_to=msg)
 
         await ctx.respond("Your redemption request has been submitted!", flags=hikari.MessageFlag.EPHEMERAL)
 
@@ -722,14 +722,22 @@ async def update_leaderboard(guild_id):
     except Exception as e:
         logger.error(f"Error updating leaderboard: {e}")
 
+async def update_all_redeems():
+    # Only run once on start to ensure views are bound
+    for guild_id in list(guild_data.keys()):
+        try:
+            await update_redeem(guild_id)
+        except:
+            pass
+
 async def update_all_leaderboards():
     while True:
-        await asyncio.sleep(1200)
         for guild_id in list(guild_data.keys()):
             try:
                 await update_leaderboard(guild_id)
             except:
                 pass
+        await asyncio.sleep(1200)
 
 @bot.command
 @lightbulb.option("price", "Coins per 1 USD", type=int)
@@ -801,7 +809,7 @@ async def set_redeem(ctx):
     await update_redeem(ctx.guild_id)
     await log_action(ctx, f"Set redeem channel to {ctx.options.channel.mention}")
 
-async def update_redeem(guild_id):
+async def update_redeem(guild_id, force_new=False):
     gdata = get_guild_data(guild_id)
     if not gdata['config'].get('redeem_channel'):
         return
@@ -821,33 +829,75 @@ async def update_redeem(guild_id):
         view.add_item(RedeemButton(guild_id))
 
         channel = gdata['config']['redeem_channel']
+        msg_id = gdata['config'].get('redeem_msg')
 
-        if gdata['config'].get('redeem_msg'):
+        if force_new or not msg_id:
+            if msg_id:
+                try:
+                    await bot.rest.delete_message(channel, msg_id)
+                except:
+                    pass
+            msg = await bot.rest.create_message(channel, embed=embed, components=view)
+            gdata['config']['redeem_msg'] = msg.id
+        else:
             try:
-                await bot.rest.delete_message(channel, gdata['config']['redeem_msg'])
-            except:
-                pass
+                msg = await bot.rest.edit_message(channel, msg_id, embed=embed, components=view)
+            except hikari.NotFoundError:
+                msg = await bot.rest.create_message(channel, embed=embed, components=view)
+                gdata['config']['redeem_msg'] = msg.id
 
-        msg = await bot.rest.create_message(
-            channel,
-            embed=embed,
-            components=view
-        )
-
-        gdata['config']['redeem_msg'] = msg.id
-        miru_client.start_view(view, bind_to=msg)
+        miru_client.start_view(view, bind_to=gdata['config']['redeem_msg'])
         await save_data()
     except Exception as e:
         logger.error(f"Error updating redeem: {e}")
 
 async def update_all_redeems():
-    while True:
-        await asyncio.sleep(1800)
-        for guild_id in list(guild_data.keys()):
-            try:
-                await update_redeem(guild_id)
-            except:
-                pass
+    # Only run once on start to ensure views are bound, then it's triggered by price changes
+    for guild_id in list(guild_data.keys()):
+        try:
+            await update_redeem(guild_id)
+        except:
+            pass
+
+@bot.command
+@lightbulb.option("currency", "Currency to convert to", choices=["EGP", "SAR", "EUR", "GBP", "JPY"])
+@lightbulb.option("amount", "Amount of coins to convert", type=int)
+@lightbulb.command("exchange", "Convert coins to real-world currency value")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def exchange_cmd(ctx):
+    amount = ctx.options.amount
+    target_currency = ctx.options.currency
+    gdata = get_guild_data(ctx.guild_id)
+    
+    price_per_usd = gdata['config'].get('price_per_usd', 100)
+    usd_value = amount / price_per_usd if price_per_usd != 0 else 0
+    
+    try:
+        async with bot.d.session.get(f"https://api.frankfurter.dev/v1/latest?base=USD&symbols={target_currency}") as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                rate = data['rates'].get(target_currency)
+                if rate:
+                    converted_value = usd_value * rate
+                    symbols = {"EGP": "EGP ", "SAR": "SAR ", "EUR": "€", "GBP": "£", "JPY": "¥"}
+                    symbol = symbols.get(target_currency, "")
+                    
+                    embed = hikari.Embed(
+                        title="💱 Currency Exchange",
+                        color=0x00FF00,
+                        description=f"**{amount} coins** is approximately:"
+                    )
+                    embed.add_field("USD Value", f"${usd_value:.2f}", inline=True)
+                    embed.add_field(f"{target_currency} Value", f"{symbol}{converted_value:.2f}", inline=True)
+                    embed.set_footer(text=f"Live Rate: 1 USD = {rate} {target_currency}")
+                    await ctx.respond(embed=embed)
+                else:
+                    await ctx.respond(f"Could not find exchange rate for {target_currency}.", flags=hikari.MessageFlag.EPHEMERAL)
+            else:
+                await ctx.respond("Failed to fetch exchange rates.", flags=hikari.MessageFlag.EPHEMERAL)
+    except Exception as e:
+        logger.error(f"Exchange error: {e}")
+        await ctx.respond("An error occurred.", flags=hikari.MessageFlag.EPHEMERAL)
 
 @bot.command
 @lightbulb.option("channel", "Channel for approvals", type=hikari.TextableGuildChannel)
@@ -1080,7 +1130,7 @@ async def help_cmd(ctx):
 
     embed = hikari.Embed(title="📚 Commands", color=0x5865F2)
 
-    user_cmds = "• `/daily` - Claim daily reward\n• `/balance` - Check your coins\n• `/help` - Show this menu"
+    user_cmds = "• `/daily` - Claim daily reward\n• `/balance` - Check your coins\n• `/exchange` - Convert coins to currency\n• `/help` - Show this menu"
 
     if is_owner or is_mod:
         mod_cmds = "• `/uncounted` - Manage uncounted channels\n• `/setleaderboard` - Set leaderboard\n• `/setredeem` - Set redeem embed\n• `/setapproval` - Set approval channel\n• `/coins` - Manage user coins\n• `/banrole` - Set banned role\n• `/restore` - Restore embeds\n• `/setlog` - Set log channel\n• `/ping` - Check latency"
