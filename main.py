@@ -510,9 +510,8 @@ async def on_message(event):
 @lightbulb.command("drop", "Drop coins in a channel")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def drop_cmd(ctx):
-    member = ctx.member
-    if MOD_ROLE_ID not in member.role_ids and ctx.user.id != OWNER_ID:
-        await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
+    if ctx.user.id != OWNER_ID:
+        await ctx.respond("Owner only.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
     action = ctx.options.action
@@ -860,13 +859,13 @@ async def update_all_redeems():
             pass
 
 @bot.command
-@lightbulb.option("currency", "Currency to convert to", choices=["EGP", "SAR", "EUR", "GBP", "JPY"])
+@lightbulb.option("currency", "Currency to convert to (Type to search, e.g., EGP, SAR, EUR, BRL, CNY)", required=True)
 @lightbulb.option("amount", "Amount of coins to convert", type=int)
 @lightbulb.command("exchange", "Convert coins to real-world currency value")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def exchange_cmd(ctx):
     amount = ctx.options.amount
-    target_currency = ctx.options.currency
+    target_currency = ctx.options.currency.upper()
     gdata = get_guild_data(ctx.guild_id)
     
     price_per_usd = gdata['config'].get('price_per_usd', 100)
@@ -879,8 +878,15 @@ async def exchange_cmd(ctx):
                 rate = data['rates'].get(target_currency)
                 if rate:
                     converted_value = usd_value * rate
-                    symbols = {"EGP": "EGP ", "SAR": "SAR ", "EUR": "€", "GBP": "£", "JPY": "¥"}
-                    symbol = symbols.get(target_currency, "")
+                    
+                    # Common symbols, fallback to currency code
+                    symbols = {
+                        "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CNY": "¥", 
+                        "EGP": "EGP ", "SAR": "SAR ", "BRL": "R$", "CAD": "C$", 
+                        "AUD": "A$", "CHF": "CHF ", "HKD": "HK$", "INR": "₹",
+                        "TRY": "₺", "ZAR": "R", "ILS": "₪", "KRW": "₩"
+                    }
+                    symbol = symbols.get(target_currency, f"{target_currency} ")
                     
                     embed = hikari.Embed(
                         title="💱 Currency Exchange",
@@ -892,12 +898,14 @@ async def exchange_cmd(ctx):
                     embed.set_footer(text=f"Live Rate: 1 USD = {rate} {target_currency}")
                     await ctx.respond(embed=embed)
                 else:
-                    await ctx.respond(f"Could not find exchange rate for {target_currency}.", flags=hikari.MessageFlag.EPHEMERAL)
+                    await ctx.respond(f"Could not find exchange rate for **{target_currency}**. Please check the currency code (e.g., USD, EGP, SAR, EUR).", flags=hikari.MessageFlag.EPHEMERAL)
+            elif resp.status == 404:
+                 await ctx.respond(f"Invalid currency code: **{target_currency}**. Please use a valid 3-letter currency code (e.g. EGP, SAR, USD).", flags=hikari.MessageFlag.EPHEMERAL)
             else:
-                await ctx.respond("Failed to fetch exchange rates.", flags=hikari.MessageFlag.EPHEMERAL)
+                await ctx.respond("Failed to fetch exchange rates. The service might be down.", flags=hikari.MessageFlag.EPHEMERAL)
     except Exception as e:
         logger.error(f"Exchange error: {e}")
-        await ctx.respond("An error occurred.", flags=hikari.MessageFlag.EPHEMERAL)
+        await ctx.respond("An error occurred while connecting to the exchange rate service.", flags=hikari.MessageFlag.EPHEMERAL)
 
 @bot.command
 @lightbulb.option("channel", "Channel for approvals", type=hikari.TextableGuildChannel)
