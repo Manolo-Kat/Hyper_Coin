@@ -634,8 +634,6 @@ class ResponseModal(miru.Modal):
 async def on_start(event):
     load_data()
     bot.d.session = aiohttp.ClientSession()
-    asyncio.create_task(update_all_leaderboards())
-    asyncio.create_task(update_all_redeems())
 
     await bot.update_presence(
         status=hikari.Status.DO_NOT_DISTURB,
