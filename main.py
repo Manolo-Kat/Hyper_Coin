@@ -215,6 +215,47 @@ def parse_color(color_input):
 
     return colors.get(color_input, 0x5865F2)
 
+class LeaderboardView(miru.View):
+    def __init__(self, guild_id, pages, current_page=0):
+        super().__init__(timeout=60.0)
+        self.guild_id = guild_id
+        self.pages = pages
+        self.current_page = current_page
+
+    async def update_message(self, ctx: miru.ViewContext):
+        embed = self.pages[self.current_page]
+        await ctx.edit_response(embed=embed, components=self)
+
+    @miru.button(label="<<", style=hikari.ButtonStyle.DANGER)
+    async def first_page(self, ctx: miru.ViewContext, button: miru.Button):
+        self.current_page = 0
+        await self.update_message(ctx)
+
+    @miru.button(label="-5", style=hikari.ButtonStyle.SUCCESS)
+    async def prev_5(self, ctx: miru.ViewContext, button: miru.Button):
+        self.current_page = max(0, self.current_page - 5)
+        await self.update_message(ctx)
+
+    @miru.button(label="<", style=hikari.ButtonStyle.PRIMARY)
+    async def prev_1(self, ctx: miru.ViewContext, button: miru.Button):
+        self.current_page = max(0, self.current_page - 1)
+        await self.update_message(ctx)
+
+    @miru.button(label=">", style=hikari.ButtonStyle.PRIMARY)
+    async def next_1(self, ctx: miru.ViewContext, button: miru.Button):
+        self.current_page = min(len(self.pages) - 1, self.current_page + 1)
+        await self.update_message(ctx)
+
+    @miru.button(label="+5", style=hikari.ButtonStyle.SUCCESS)
+    async def next_5(self, ctx: miru.ViewContext, button: miru.Button):
+        self.current_page = min(len(self.pages) - 1, self.current_page + 5)
+        await self.update_message(ctx)
+
+    @miru.button(label=">>", style=hikari.ButtonStyle.DANGER)
+    async def last_page(self, ctx: miru.ViewContext, button: miru.Button):
+        self.current_page = len(self.pages) - 1
+        await self.update_message(ctx)
+
 def create_chart(guild_id):
     gdata = get_guild_data(guild_id)
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -274,6 +315,140 @@ def create_chart(guild_id):
     buf.seek(0)
     plt.close(fig)
     return buf
+
+class ShopView(miru.View):
+    def __init__(self, guild_id):
+        super().__init__(timeout=60.0)
+        self.guild_id = guild_id
+
+    @miru.select(
+        placeholder="Choose your reward",
+        options=[
+            miru.SelectOption(label="PayPal", value="PayPal"),
+            miru.SelectOption(label="Steam", value="Steam"),
+            miru.SelectOption(label="Discord Nitro (Basic)", value="Discord Nitro Basic"),
+            miru.SelectOption(label="Discord Nitro (Gaming)", value="Discord Nitro Gaming"),
+            miru.SelectOption(label="Google Play", value="Google Play"),
+            miru.SelectOption(label="Apple Pay", value="Apple Pay"),
+        ]
+    )
+    async def reward_select(self, ctx: miru.ViewContext, select: miru.Select):
+        modal = ShopModal(self.guild_id, select.values[0])
+        await ctx.respond_with_modal(modal)
+
+class ShopModal(miru.Modal):
+    def __init__(self, guild_id, reward_type):
+        super().__init__(f"Shop - {reward_type}")
+        self.guild_id = guild_id
+        self.reward_type = reward_type
+        self.amount_input = miru.TextInput(label="Amount per USD", placeholder="Enter USD amount (e.g. 5)", required=True)
+        self.add_item(self.amount_input)
+
+    async def callback(self, ctx: miru.ModalContext):
+        gdata = get_guild_data(self.guild_id)
+        try:
+            usd_amount = int(self.amount_input.value)
+        except ValueError:
+            await ctx.respond("Please enter a valid number for the amount.", flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        price_per_usd = gdata['config'].get('price_per_usd', 100)
+        required_coins = usd_amount * price_per_usd
+        user_balance = gdata['users'].get(ctx.user.id, 0)
+
+        if user_balance < required_coins:
+            await ctx.respond(f"Insufficient balance. You need {required_coins} coins for ${usd_amount} USD.", flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        # Deduct balance
+        gdata['users'][ctx.user.id] -= required_coins
+        await save_data()
+
+        # Send to approval channel
+        approval_channel_id = gdata['config'].get('approval_channel')
+        if not approval_channel_id:
+            # Refund if no approval channel
+            gdata['users'][ctx.user.id] += required_coins
+            await save_data()
+            await ctx.respond("Shop is not configured (no approval channel). Refunded.", flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        embed = hikari.Embed(title="🛒 New Shop Request", color=0x5865F2)
+        embed.add_field("User", f"<@{ctx.user.id}>", inline=True)
+        embed.add_field("Reward", self.reward_type, inline=True)
+        embed.add_field("Amount", f"${usd_amount} USD ({required_coins} coins)", inline=True)
+        embed.timestamp = datetime.now(timezone.utc)
+
+        view = ShopApprovalView(self.guild_id, ctx.user.id, self.reward_type, usd_amount, required_coins)
+        msg = await bot.rest.create_message(approval_channel_id, embed=embed, components=view)
+        miru_client.start_view(view, bind_to=msg)
+
+        await ctx.respond("Your request has been submitted and balance deducted.", flags=hikari.MessageFlag.EPHEMERAL)
+
+class ShopApprovalView(miru.View):
+    def __init__(self, guild_id, user_id, reward_type, usd_amount, coin_amount):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.reward_type = reward_type
+        self.usd_amount = usd_amount
+        self.coin_amount = coin_amount
+
+    @miru.button(label="Approve", style=hikari.ButtonStyle.SUCCESS)
+    async def approve(self, ctx: miru.ViewContext, button: miru.Button):
+        member = await bot.rest.fetch_member(self.guild_id, ctx.user.id)
+        if MOD_ROLE_ID not in member.role_ids and ctx.user.id != OWNER_ID:
+            await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        modal = ShopResponseModal(self.guild_id, self.user_id, True, self.reward_type, self.usd_amount, self.coin_amount)
+        await ctx.respond_with_modal(modal)
+
+    @miru.button(label="Reject", style=hikari.ButtonStyle.DANGER)
+    async def reject(self, ctx: miru.ViewContext, button: miru.Button):
+        member = await bot.rest.fetch_member(self.guild_id, ctx.user.id)
+        if MOD_ROLE_ID not in member.role_ids and ctx.user.id != OWNER_ID:
+            await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        # Auto-refund on rejection
+        gdata = get_guild_data(self.guild_id)
+        gdata['users'][self.user_id] = gdata['users'].get(self.user_id, 0) + self.coin_amount
+        await save_data()
+
+        modal = ShopResponseModal(self.guild_id, self.user_id, False, self.reward_type, self.usd_amount, self.coin_amount)
+        await ctx.respond_with_modal(modal)
+
+class ShopResponseModal(miru.Modal):
+    def __init__(self, guild_id, user_id, is_approve, reward_type, usd_amount, coin_amount):
+        super().__init__("Shop Response")
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.is_approve = is_approve
+        self.reward_type = reward_type
+        self.usd_amount = usd_amount
+        self.coin_amount = coin_amount
+        
+        self.msg_input = miru.TextInput(label="Message to User", style=hikari.TextInputStyle.PARAGRAPH, required=True)
+        self.add_item(self.msg_input)
+
+    async def callback(self, ctx: miru.ModalContext):
+        status = "Approved" if self.is_approve else "Rejected"
+        color = 0x00FF00 if self.is_approve else 0xFF0000
+        
+        embed = hikari.Embed(title=f"🛒 Shop Request {status}", color=color)
+        embed.add_field("Reward", self.reward_type, inline=True)
+        embed.add_field("Amount", f"${self.usd_amount} USD", inline=True)
+        embed.add_field("Message", self.msg_input.value, inline=False)
+        
+        try:
+            user = await bot.rest.fetch_user(self.user_id)
+            await user.send(embed=embed)
+        except:
+            pass
+
+        await ctx.edit_response(embed=hikari.Embed(title=f"Request {status}", description=f"Handled by <@{ctx.user.id}>", color=color), components=[])
+        await ctx.respond("Response sent.", flags=hikari.MessageFlag.EPHEMERAL)
 
 class RedeemButton(miru.Button):
     def __init__(self, guild_id):
@@ -502,6 +677,60 @@ async def on_message(event):
     gdata['cooldowns'][user_id] = now
     check_streak(event.guild_id, user_id)
     await add_coins(event.guild_id, user_id, 5, member)
+
+@bot.command
+@lightbulb.command("leaderboard", "Show the coin leaderboard")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def leaderboard_cmd(ctx):
+    gdata = get_guild_data(ctx.guild_id)
+    sorted_users = sorted(gdata['users'].items(), key=lambda x: x[1], reverse=True)
+    
+    if not sorted_users:
+        await ctx.respond("The leaderboard is empty.")
+        return
+
+    pages = []
+    users_per_page = 10
+    total_pages = (len(sorted_users) + users_per_page - 1) // users_per_page
+    
+    user_rank = -1
+    for i, (uid, _) in enumerate(sorted_users):
+        if uid == ctx.user.id:
+            user_rank = i + 1
+            break
+
+    for p in range(total_pages):
+        embed = hikari.Embed(title="🏆 Coin Leaderboard", color=0xFFD700)
+        start = p * users_per_page
+        end = start + users_per_page
+        page_users = sorted_users[start:end]
+        
+        desc = ""
+        for i, (uid, coins) in enumerate(page_users):
+            rank = start + i + 1
+            desc += f"**#{rank}** <@{uid}>: `{coins}` coins\n"
+        
+        embed.description = desc
+        
+        # Check if user is on this page
+        user_on_page = any(uid == ctx.user.id for uid, _ in page_users)
+        if not user_on_page and user_rank != -1:
+            embed.set_footer(text=f"Your position: #{user_rank}")
+        
+        pages.append(embed)
+
+    view = LeaderboardView(ctx.guild_id, pages)
+    msg = await ctx.respond(embed=pages[0], components=view)
+    miru_client.start_view(view, bind_to=msg)
+
+@bot.command
+@lightbulb.command("shop", "Open the reward shop")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def shop_cmd(ctx):
+    embed = hikari.Embed(title="🛒 Reward Shop", description="Select a reward from the menu below to redeem your coins.", color=0x5865F2)
+    view = ShopView(ctx.guild_id)
+    msg = await ctx.respond(embed=embed, components=view)
+    miru_client.start_view(view, bind_to=msg)
 
 @bot.command
 @lightbulb.option("price", "Price to give or take", type=int)
@@ -1148,10 +1377,10 @@ async def help_cmd(ctx):
 
     embed = hikari.Embed(title="📚 Commands", color=0x5865F2)
 
-    user_cmds = "• `/daily` - Claim daily reward\n• `/balance` - Check your coins\n• `/exchange` - Convert coins to currency\n• `/help` - Show this menu"
+    user_cmds = "• `/daily` - Claim daily reward\n• `/balance` - Check your coins\n• `/exchange` - Convert coins to currency\n• `/leaderboard` - Show leaderboard\n• `/shop` - Open shop\n• `/help` - Show this menu"
 
     if is_owner or is_mod:
-        mod_cmds = "• `/uncounted` - Manage uncounted channels\n• `/setleaderboard` - Set leaderboard\n• `/setredeem` - Set redeem embed\n• `/setapproval` - Set approval channel\n• `/coins` - Manage user coins\n• `/banrole` - Set banned role\n• `/restore` - Restore embeds\n• `/setlog` - Set log channel\n• `/ping` - Check latency"
+        mod_cmds = "• `/uncounted` - Manage uncounted channels\n• `/coins` - Manage user coins\n• `/banrole` - Set banned role\n• `/setlog` - Set log channel\n• `/ping` - Check latency"
         embed.add_field("User Commands", user_cmds, inline=False)
         embed.add_field("Moderator Commands", mod_cmds, inline=False)
 
