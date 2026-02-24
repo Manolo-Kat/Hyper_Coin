@@ -321,7 +321,12 @@ class ShopView(miru.View):
         super().__init__(timeout=60.0)
         self.guild_id = guild_id
 
-    @miru.select(
+    @miru.button(label="Open Shop Menu", style=hikari.ButtonStyle.PRIMARY)
+    async def open_shop(self, ctx: miru.ViewContext):
+        # This button is just to satisfy the view if needed, but the select is the main part
+        await ctx.respond("Please use the dropdown menu below to select your reward.", flags=hikari.MessageFlag.EPHEMERAL)
+
+    @miru.text_select(
         placeholder="Choose your reward",
         options=[
             miru.SelectOption(label="PayPal", value="PayPal"),
@@ -332,7 +337,7 @@ class ShopView(miru.View):
             miru.SelectOption(label="Apple Pay", value="Apple Pay"),
         ]
     )
-    async def reward_select(self, ctx: miru.ViewContext, select: miru.Select):
+    async def reward_select(self, ctx: miru.ViewContext, select: miru.TextSelect):
         modal = ShopModal(self.guild_id, select.values[0])
         await ctx.respond_with_modal(modal)
 
@@ -347,7 +352,7 @@ class ShopModal(miru.Modal):
     async def callback(self, ctx: miru.ModalContext):
         gdata = get_guild_data(self.guild_id)
         try:
-            usd_amount = int(self.amount_input.value)
+            usd_amount = int(list(self.amount_input.values.values())[0])
         except ValueError:
             await ctx.respond("Please enter a valid number for the amount.", flags=hikari.MessageFlag.EPHEMERAL)
             return
@@ -439,7 +444,7 @@ class ShopResponseModal(miru.Modal):
         embed = hikari.Embed(title=f"🛒 Shop Request {status}", color=color)
         embed.add_field("Reward", self.reward_type, inline=True)
         embed.add_field("Amount", f"${self.usd_amount} USD", inline=True)
-        embed.add_field("Message", self.msg_input.value, inline=False)
+        embed.add_field("Message", list(self.msg_input.values.values())[0], inline=False)
         
         try:
             user = await bot.rest.fetch_user(self.user_id)
