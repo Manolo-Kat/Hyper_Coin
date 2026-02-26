@@ -226,12 +226,12 @@ class LeaderboardView(miru.View):
         embed = self.pages[self.current_page]
         await ctx.edit_response(embed=embed, components=self)
 
-    @miru.button(label="<<", style=hikari.ButtonStyle.DANGER)
+    @miru.button(label="<<<", style=hikari.ButtonStyle.DANGER)
     async def first_page(self, ctx: miru.ViewContext, button: miru.Button):
         self.current_page = 0
         await self.update_message(ctx)
 
-    @miru.button(label="-5", style=hikari.ButtonStyle.SUCCESS)
+    @miru.button(label="<<", style=hikari.ButtonStyle.SUCCESS)
     async def prev_5(self, ctx: miru.ViewContext, button: miru.Button):
         self.current_page = max(0, self.current_page - 5)
         await self.update_message(ctx)
@@ -246,12 +246,12 @@ class LeaderboardView(miru.View):
         self.current_page = min(len(self.pages) - 1, self.current_page + 1)
         await self.update_message(ctx)
 
-    @miru.button(label="+5", style=hikari.ButtonStyle.SUCCESS)
+    @miru.button(label=">>", style=hikari.ButtonStyle.SUCCESS)
     async def next_5(self, ctx: miru.ViewContext, button: miru.Button):
         self.current_page = min(len(self.pages) - 1, self.current_page + 5)
         await self.update_message(ctx)
 
-    @miru.button(label=">>", style=hikari.ButtonStyle.DANGER)
+    @miru.button(label=">>>", style=hikari.ButtonStyle.DANGER)
     async def last_page(self, ctx: miru.ViewContext, button: miru.Button):
         self.current_page = len(self.pages) - 1
         await self.update_message(ctx)
