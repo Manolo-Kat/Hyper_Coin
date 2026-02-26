@@ -17,6 +17,7 @@
         },
         "uncounted": [],
         "banned_role": null,
+        "allowed_roles": [],
         "config": {
             "leaderboard_channel": 1467191542098694299,
             "leaderboard_msg": 1475654756348465284,
@@ -37,8 +38,21 @@
                 {
                     "price": 200,
                     "timestamp": "2026-02-17T19:26:44.869058+00:00"
+                },
+                {
+                    "item": "PayPal",
+                    "price": 1,
+                    "timestamp": "2026-02-26T00:45:07.768450+00:00"
                 }
-            ]
+            ],
+            "shop_prices": {
+                "PayPal": 1,
+                "Steam": 100,
+                "Google Play": 100,
+                "Discord Nitro Basic": 100,
+                "Discord Nitro Gaming": 100,
+                "Apple Pay": 100
+            }
         }
     }
 }

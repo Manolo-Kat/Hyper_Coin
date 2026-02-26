@@ -291,60 +291,91 @@ class ShopView(miru.View):
         super().__init__(timeout=60.0)
         self.guild_id = guild_id
 
-    @miru.text_select(
-        placeholder="Choose your reward",
-        options=[
-            miru.SelectOption(label="PayPal", value="PayPal"),
-            miru.SelectOption(label="Steam", value="Steam"),
-            miru.SelectOption(label="Discord Nitro (Basic)", value="Discord Nitro Basic"),
-            miru.SelectOption(label="Discord Nitro (Gaming)", value="Discord Nitro Gaming"),
-            miru.SelectOption(label="Google Play", value="Google Play"),
-            miru.SelectOption(label="Apple Pay", value="Apple Pay"),
-        ]
-    )
-    async def reward_select(self, ctx: miru.ViewContext, select: miru.TextSelect):
-        modal = ShopModal(self.guild_id, select.values[0])
+    @miru.button(label="Open Shop Form", style=hikari.ButtonStyle.PRIMARY)
+    async def open_shop(self, ctx: miru.ViewContext):
+        gdata = get_guild_data(self.guild_id)
+        user_balance = gdata['users'].get(ctx.user.id, 0)
+        price_per_usd = gdata['config'].get('price_per_usd', 100)
+        min_coins = 5 * price_per_usd
+
+        if user_balance < min_coins:
+            await ctx.respond(f"You don't have enough coins. Minimum is 5$ ({min_coins} coins).", flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        modal = ShopModal(self.guild_id)
         await ctx.respond_with_modal(modal)
 
 class ShopModal(miru.Modal):
-    def __init__(self, guild_id, reward_type):
-        super().__init__(f"Shop - {reward_type}")
+    def __init__(self, guild_id):
+        super().__init__("Shop Request Form")
         self.guild_id = guild_id
-        self.reward_type = reward_type
-        self.amount_input = miru.TextInput(label="Amount (USD)", placeholder="Enter USD amount (e.g. 5)", required=True)
-        self.add_item(self.amount_input)
+        self.gift_type = miru.TextInput(label="Gift Type", placeholder="PayPal, Steam, Google Play, Discord Basic, Discord Gaming, Roblox, Apple Store", required=True)
+        self.amount = miru.TextInput(label="Price (USD Amount)", placeholder="e.g. 10", required=True)
+        self.region = miru.TextInput(label="Region", placeholder="Only for Steam, Google Play, Apple Store, Roblox", required=False)
+        self.add_item(self.gift_type)
+        self.add_item(self.amount)
+        self.add_item(self.region)
 
     async def callback(self, ctx: miru.ModalContext):
         gdata = get_guild_data(self.guild_id)
+        gift_type = self.gift_type.value.strip()
         try:
-            usd_amount = int(list(self.amount_input.values.values())[0])
+            usd_amount = int(self.amount.value.strip())
         except ValueError:
             await ctx.respond("Please enter a valid number for the amount.", flags=hikari.MessageFlag.EPHEMERAL)
             return
+
+        if usd_amount < 5:
+            await ctx.respond("Minimum order is 5$.", flags=hikari.MessageFlag.EPHEMERAL)
+            return
+
+        region = self.region.value.strip() if self.region.value else "N/A"
+        
         shop_prices = gdata['config'].get('shop_prices', {})
-        price_per_usd = shop_prices.get(self.reward_type, 100)
+        # Map input to shop_prices keys
+        mapping = {
+            "paypal": "PayPal",
+            "steam": "Steam",
+            "google play": "Google Play",
+            "discord basic": "Discord Nitro Basic",
+            "discord gaming": "Discord Nitro Gaming",
+            "apple store": "Apple Pay",
+            "roblox": "Roblox"
+        }
+        mapped_type = mapping.get(gift_type.lower(), gift_type)
+        price_per_usd = shop_prices.get(mapped_type, gdata['config'].get('price_per_usd', 100))
         required_coins = usd_amount * price_per_usd
+        
         user_balance = gdata['users'].get(ctx.user.id, 0)
         if user_balance < required_coins:
-            await ctx.respond(f"Insufficient balance. You need {required_coins} coins for ${usd_amount} USD worth of {self.reward_type}.", flags=hikari.MessageFlag.EPHEMERAL)
+            await ctx.respond(f"Insufficient balance. You need {required_coins} coins for this request.", flags=hikari.MessageFlag.EPHEMERAL)
             return
+
+        # Deduct coins temporary
         gdata['users'][ctx.user.id] -= required_coins
         await save_data()
+
         approval_channel_id = gdata['config'].get('approval_channel')
         if not approval_channel_id:
             gdata['users'][ctx.user.id] += required_coins
             await save_data()
             await ctx.respond("Shop is not configured (no approval channel). Refunded.", flags=hikari.MessageFlag.EPHEMERAL)
             return
+
         embed = hikari.Embed(title="🛒 New Shop Request", color=0x5865F2)
-        embed.add_field("User", f"<@{ctx.user.id}>", inline=True)
-        embed.add_field("Reward", self.reward_type, inline=True)
-        embed.add_field("Amount", f"${usd_amount} USD ({required_coins} coins)", inline=True)
+        embed.set_thumbnail(ctx.user.avatar_url or ctx.user.default_avatar_url)
+        embed.add_field("User", f"{ctx.user.username} (<@{ctx.user.id}>)", inline=True)
+        embed.add_field("Gift Type", mapped_type, inline=True)
+        embed.add_field("Amount", f"${usd_amount} USD", inline=True)
+        embed.add_field("Coins Deducted", f"{required_coins} coins", inline=True)
+        embed.add_field("Region", region, inline=True)
         embed.timestamp = datetime.now(timezone.utc)
-        view = ShopApprovalView(self.guild_id, ctx.user.id, self.reward_type, usd_amount, required_coins)
+
+        view = ShopApprovalView(self.guild_id, ctx.user.id, mapped_type, usd_amount, required_coins)
         msg = await bot.rest.create_message(approval_channel_id, embed=embed, components=view)
         miru_client.start_view(view, bind_to=msg)
-        await ctx.respond("Your request has been submitted and balance deducted.", flags=hikari.MessageFlag.EPHEMERAL)
+
+        await ctx.respond("Your request has been submitted. Coins have been deducted temporarily.", flags=hikari.MessageFlag.EPHEMERAL)
 
 class ShopApprovalView(miru.View):
     def __init__(self, guild_id, user_id, reward_type, usd_amount, coin_amount):
@@ -355,13 +386,13 @@ class ShopApprovalView(miru.View):
         self.usd_amount = usd_amount
         self.coin_amount = coin_amount
 
-    @miru.button(label="Approve", style=hikari.ButtonStyle.SUCCESS)
+    @miru.button(label="Accept", style=hikari.ButtonStyle.SUCCESS)
     async def approve(self, ctx: miru.ViewContext, button: miru.Button):
         member = await bot.rest.fetch_member(self.guild_id, ctx.user.id)
         if MOD_ROLE_ID not in member.role_ids and ctx.user.id != OWNER_ID:
             await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
             return
-        modal = ShopResponseModal(self.guild_id, self.user_id, True, self.reward_type, self.usd_amount, self.coin_amount)
+        modal = ShopAcceptModal(self.user_id, self.reward_type, self.usd_amount)
         await ctx.respond_with_modal(modal)
 
     @miru.button(label="Reject", style=hikari.ButtonStyle.DANGER)
@@ -370,38 +401,42 @@ class ShopApprovalView(miru.View):
         if MOD_ROLE_ID not in member.role_ids and ctx.user.id != OWNER_ID:
             await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
             return
+        
+        # Refund coins
         gdata = get_guild_data(self.guild_id)
         gdata['users'][self.user_id] = gdata['users'].get(self.user_id, 0) + self.coin_amount
         await save_data()
-        modal = ShopResponseModal(self.guild_id, self.user_id, False, self.reward_type, self.usd_amount, self.coin_amount)
-        await ctx.respond_with_modal(modal)
 
-class ShopResponseModal(miru.Modal):
-    def __init__(self, guild_id, user_id, is_approve, reward_type, usd_amount, coin_amount):
-        super().__init__("Shop Response")
-        self.guild_id = guild_id
-        self.user_id = user_id
-        self.is_approve = is_approve
-        self.reward_type = reward_type
-        self.usd_amount = usd_amount
-        self.coin_amount = coin_amount
-        self.msg_input = miru.TextInput(label="Message to User", style=hikari.TextInputStyle.PARAGRAPH, required=True)
-        self.add_item(self.msg_input)
-
-    async def callback(self, ctx: miru.ModalContext):
-        status = "Approved" if self.is_approve else "Rejected"
-        color = 0x00FF00 if self.is_approve else 0xFF0000
-        embed = hikari.Embed(title=f"🛒 Shop Request {status}", color=color)
-        embed.add_field("Reward", self.reward_type, inline=True)
-        embed.add_field("Amount", f"${self.usd_amount} USD", inline=True)
-        embed.add_field("Message", list(self.msg_input.values.values())[0], inline=False)
         try:
             user = await bot.rest.fetch_user(self.user_id)
-            await user.send(embed=embed)
+            await user.send(f"Your shop request for {self.reward_type} (${self.usd_amount}) was rejected. Your coins have been refunded.")
         except:
             pass
-        await ctx.edit_response(embed=hikari.Embed(title=f"Request {status}", description=f"Handled by <@{ctx.user.id}>", color=color), components=[])
-        await ctx.respond("Response sent.", flags=hikari.MessageFlag.EPHEMERAL)
+        
+        await ctx.edit_response(content="Request rejected and user notified.", embed=None, components=[])
+
+class ShopAcceptModal(miru.Modal):
+    def __init__(self, user_id, reward_type, usd_amount):
+        super().__init__("Accept Request - Enter Code")
+        self.user_id = user_id
+        self.reward_type = reward_type
+        self.usd_amount = usd_amount
+        self.code_input = miru.TextInput(label="Gift Code / Details", placeholder="Enter the code or delivery details here", style=hikari.TextInputStyle.PARAGRAPH, required=True)
+        self.add_item(self.code_input)
+
+    async def callback(self, ctx: miru.ModalContext):
+        code = self.code_input.value
+        try:
+            user = await bot.rest.fetch_user(self.user_id)
+            embed = hikari.Embed(title="✅ Shop Request Approved", color=0x00FF00)
+            embed.add_field("Item", f"{self.reward_type} (${self.usd_amount})", inline=False)
+            embed.add_field("Your Code", f"```\n{code}\n```", inline=False)
+            await user.send(embed=embed)
+            await ctx.respond("Code sent to user.", flags=hikari.MessageFlag.EPHEMERAL)
+            await ctx.edit_response(content=f"Request approved and code sent to <@{self.user_id}>.", embed=None, components=[])
+        except:
+            await ctx.respond("Failed to DM user. Please contact them manually.", flags=hikari.MessageFlag.EPHEMERAL)
+
 
 @bot.listen(hikari.GuildMessageCreateEvent)
 async def on_message(event):
