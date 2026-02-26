@@ -304,6 +304,7 @@ class ShopView(miru.View):
 
         modal = ShopModal(self.guild_id)
         await ctx.respond_with_modal(modal)
+        miru_client.start_modal(modal)
 
 class ShopModal(miru.Modal):
     def __init__(self, guild_id):
@@ -373,7 +374,8 @@ class ShopModal(miru.Modal):
 
         view = ShopApprovalView(self.guild_id, ctx.user.id, mapped_type, usd_amount, required_coins)
         msg = await bot.rest.create_message(approval_channel_id, embed=embed, components=view)
-        miru_client.start_view(view, bind_to=msg)
+        # miru_client.start_view(view, bind_to=msg) # Removed bind_to as it might be causing issues with eph views
+        miru_client.start_view(view)
 
         await ctx.respond("Your request has been submitted. Coins have been deducted temporarily.", flags=hikari.MessageFlag.EPHEMERAL)
 
@@ -394,6 +396,7 @@ class ShopApprovalView(miru.View):
             return
         modal = ShopAcceptModal(self.user_id, self.reward_type, self.usd_amount)
         await ctx.respond_with_modal(modal)
+        miru_client.start_modal(modal)
 
     @miru.button(label="Reject", style=hikari.ButtonStyle.DANGER)
     async def reject(self, ctx: miru.ViewContext, button: miru.Button):
@@ -550,6 +553,7 @@ async def shop_cmd(ctx):
         return
     view = ShopView(ctx.guild_id)
     await ctx.respond("Select a reward:", components=view, flags=hikari.MessageFlag.EPHEMERAL)
+    miru_client.start_view(view)
 
 @bot.command
 @lightbulb.option("role", "Role to allow", type=hikari.Role)
