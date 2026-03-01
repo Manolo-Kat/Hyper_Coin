@@ -11,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import json
 import os
-import base64
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
@@ -22,10 +21,8 @@ from dotenv import dotenv_values
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger("DiscordBot")
 
@@ -68,9 +65,11 @@ def get_guild_data(guild_id):
                     'PayPal': 100,
                     'Steam': 100,
                     'Google Play': 100,
+                    'Apple Store': 100,
                     'Discord Nitro Basic': 100,
-                    'Discord Nitro Gaming': 100,
-                    'Apple Pay': 100
+                    'Discord Nitro Boost': 100,
+                    'Nintendo Card': 100,
+                    'Roblox': 100
                 },
                 'log_channel': None,
                 'price_history': []
@@ -105,9 +104,11 @@ def load_data():
                         'PayPal': 100,
                         'Steam': 100,
                         'Google Play': 100,
+                        'Apple Store': 100,
                         'Discord Nitro Basic': 100,
-                        'Discord Nitro Gaming': 100,
-                        'Apple Pay': 100
+                        'Discord Nitro Boost': 100,
+                        'Nintendo Card': 100,
+                        'Roblox': 100
                     })
         logger.info("Data loaded successfully")
     except Exception as e:
@@ -286,98 +287,90 @@ def create_chart(guild_id):
     plt.close(fig)
     return buf
 
-class ShopView(miru.View):
-    def __init__(self, guild_id):
-        super().__init__(timeout=60.0)
-        self.guild_id = guild_id
+@bot.command
+@lightbulb.option("gmail", "Your PayPal Gmail (PayPal only)", required=False)
+@lightbulb.option("region", "Gift Card Region (Steam, Google Play, Apple, Nitro, Nintendo, Roblox)", required=False)
+@lightbulb.option("amount", "Amount in USD (Minimum $5)", type=int)
+@lightbulb.option("type", "Gift Type", choices=["PayPal", "Steam", "Google Play", "Apple Store", "Discord Nitro Basic", "Discord Nitro Boost", "Nintendo Card", "Roblox"])
+@lightbulb.command("buy", "Purchase a gift with your coins")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def buy_cmd(ctx):
+    if is_banned(ctx.guild_id, ctx.member):
+        await ctx.respond("Banned.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
 
-    @miru.button(label="Open Shop Form", style=hikari.ButtonStyle.PRIMARY)
-    async def open_shop(self, ctx: miru.ViewContext):
-        gdata = get_guild_data(self.guild_id)
-        user_balance = gdata['users'].get(ctx.user.id, 0)
-        price_per_usd = gdata['config'].get('price_per_usd', 100)
-        min_coins = 5 * price_per_usd
+    gdata = get_guild_data(ctx.guild_id)
+    gift_type = ctx.options.type
+    usd_amount = ctx.options.amount
+    region = ctx.options.region
+    gmail = ctx.options.gmail
 
-        if user_balance < min_coins:
-            await ctx.respond(f"You don't have enough coins. Minimum is 5$ ({min_coins} coins).", flags=hikari.MessageFlag.EPHEMERAL)
+    if usd_amount < 5:
+        await ctx.respond("Minimum purchase is $5.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+
+    # Mapping logic
+    mapping = {
+        "PayPal": "PayPal",
+        "Steam": "Steam",
+        "Google Play": "Google Play",
+        "Apple Store": "Apple Store",
+        "Discord Nitro Basic": "Discord Nitro Basic",
+        "Discord Nitro Boost": "Discord Nitro Boost",
+        "Nintendo Card": "Nintendo Card",
+        "Roblox": "Roblox"
+    }
+    mapped_type = mapping.get(gift_type, gift_type)
+    
+    # Validation logic
+    region_str = "N/A"
+    contact_str = "N/A"
+    
+    if mapped_type == "PayPal":
+        if not gmail or not re.match(r"[^@]+@[^@]+\.[^@]+", gmail):
+            await ctx.respond("Please provide a valid Gmail for PayPal.", flags=hikari.MessageFlag.EPHEMERAL)
             return
-
-        modal = ShopModal(self.guild_id)
-        await ctx.respond_with_modal(modal)
-        miru_client.start_modal(modal)
-
-class ShopModal(miru.Modal):
-    def __init__(self, guild_id):
-        super().__init__("Shop Request Form")
-        self.guild_id = guild_id
-        self.gift_type = miru.TextInput(label="Gift Type", placeholder="PayPal, Steam, Google Play, Discord Basic, Discord Gaming, Roblox, Apple Store", required=True)
-        self.amount = miru.TextInput(label="Price (USD Amount)", placeholder="e.g. 10", required=True)
-        self.region = miru.TextInput(label="Region", placeholder="Only for Steam, Google Play, Apple Store, Roblox", required=False)
-        self.add_item(self.gift_type)
-        self.add_item(self.amount)
-        self.add_item(self.region)
-
-    async def callback(self, ctx: miru.ModalContext):
-        gdata = get_guild_data(self.guild_id)
-        gift_type = self.gift_type.value.strip()
-        try:
-            usd_amount = int(self.amount.value.strip())
-        except ValueError:
-            await ctx.respond("Please enter a valid number for the amount.", flags=hikari.MessageFlag.EPHEMERAL)
+        contact_str = f"Gmail: {gmail}"
+    else:
+        if not region or len(region) < 2:
+            await ctx.respond(f"Please provide a valid region for {mapped_type}.", flags=hikari.MessageFlag.EPHEMERAL)
             return
+        region_str = region
 
-        if usd_amount < 5:
-            await ctx.respond("Minimum order is 5$.", flags=hikari.MessageFlag.EPHEMERAL)
-            return
+    shop_prices = gdata['config'].get('shop_prices', {})
+    price_per_usd = shop_prices.get(mapped_type, gdata['config'].get('price_per_usd', 100))
+    required_coins = usd_amount * price_per_usd
+    
+    user_balance = gdata['users'].get(ctx.user.id, 0)
+    if user_balance < required_coins:
+        await ctx.respond(f"Insufficient balance. You need {required_coins} coins.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
 
-        region = self.region.value.strip() if self.region.value else "N/A"
-        
-        shop_prices = gdata['config'].get('shop_prices', {})
-        # Map input to shop_prices keys
-        mapping = {
-            "paypal": "PayPal",
-            "steam": "Steam",
-            "google play": "Google Play",
-            "discord basic": "Discord Nitro Basic",
-            "discord gaming": "Discord Nitro Gaming",
-            "apple store": "Apple Pay",
-            "roblox": "Roblox"
-        }
-        mapped_type = mapping.get(gift_type.lower(), gift_type)
-        price_per_usd = shop_prices.get(mapped_type, gdata['config'].get('price_per_usd', 100))
-        required_coins = usd_amount * price_per_usd
-        
-        user_balance = gdata['users'].get(ctx.user.id, 0)
-        if user_balance < required_coins:
-            await ctx.respond(f"Insufficient balance. You need {required_coins} coins for this request.", flags=hikari.MessageFlag.EPHEMERAL)
-            return
+    approval_channel_id = gdata['config'].get('approval_channel')
+    if not approval_channel_id:
+        await ctx.respond("Shop is not configured (no approval channel).", flags=hikari.MessageFlag.EPHEMERAL)
+        return
 
-        # Deduct coins temporary
-        gdata['users'][ctx.user.id] -= required_coins
-        await save_data()
+    # Deduct coins temporary
+    gdata['users'][ctx.user.id] -= required_coins
+    await save_data()
 
-        approval_channel_id = gdata['config'].get('approval_channel')
-        if not approval_channel_id:
-            gdata['users'][ctx.user.id] += required_coins
-            await save_data()
-            await ctx.respond("Shop is not configured (no approval channel). Refunded.", flags=hikari.MessageFlag.EPHEMERAL)
-            return
+    embed = hikari.Embed(title="🛒 New Purchase Request", color=0x5865F2)
+    embed.set_thumbnail(ctx.user.avatar_url or ctx.user.default_avatar_url)
+    embed.add_field("User", f"{ctx.user.username} (<@{ctx.user.id}>)", inline=True)
+    embed.add_field("Type", mapped_type, inline=True)
+    embed.add_field("Amount", f"${usd_amount} USD", inline=True)
+    embed.add_field("Coins", f"{required_coins}", inline=True)
+    embed.add_field("Region", region_str, inline=True)
+    embed.add_field("Contact", contact_str, inline=True)
+    embed.timestamp = datetime.now(timezone.utc)
 
-        embed = hikari.Embed(title="🛒 New Shop Request", color=0x5865F2)
-        embed.set_thumbnail(ctx.user.avatar_url or ctx.user.default_avatar_url)
-        embed.add_field("User", f"{ctx.user.username} (<@{ctx.user.id}>)", inline=True)
-        embed.add_field("Gift Type", mapped_type, inline=True)
-        embed.add_field("Amount", f"${usd_amount} USD", inline=True)
-        embed.add_field("Coins Deducted", f"{required_coins} coins", inline=True)
-        embed.add_field("Region", region, inline=True)
-        embed.timestamp = datetime.now(timezone.utc)
+    view = ShopApprovalView(ctx.guild_id, ctx.user.id, mapped_type, usd_amount, required_coins)
+    await bot.rest.create_message(approval_channel_id, embed=embed, components=view)
+    miru_client.start_view(view)
 
-        view = ShopApprovalView(self.guild_id, ctx.user.id, mapped_type, usd_amount, required_coins)
-        msg = await bot.rest.create_message(approval_channel_id, embed=embed, components=view)
-        # miru_client.start_view(view, bind_to=msg) # Removed bind_to as it might be causing issues with eph views
-        miru_client.start_view(view)
+    await ctx.respond("Your purchase request has been submitted. Coins deducted temporarily.", flags=hikari.MessageFlag.EPHEMERAL)
 
-        await ctx.respond("Your request has been submitted. Coins have been deducted temporarily.", flags=hikari.MessageFlag.EPHEMERAL)
 
 class ShopApprovalView(miru.View):
     def __init__(self, guild_id, user_id, reward_type, usd_amount, coin_amount):
@@ -523,7 +516,7 @@ async def uncounted_cmd(ctx):
 
 @bot.command
 @lightbulb.option("price", "New price per $1 USD", type=int)
-@lightbulb.option("item", "Shop item", choices=["PayPal", "Steam", "Google Play", "Discord Nitro Basic", "Discord Nitro Gaming", "Apple Pay"])
+@lightbulb.option("item", "Shop item", choices=["PayPal", "Steam", "Google Play", "Apple Store", "Discord Nitro Basic", "Discord Nitro Boost", "Nintendo Card", "Roblox"])
 @lightbulb.command("setprice", "Set reward price for an item")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def set_price(ctx):
@@ -543,17 +536,6 @@ async def set_price(ctx):
     })
     await save_data()
     await ctx.respond(f"Price for **{item}** updated: {old_price} -> {new_price}", flags=hikari.MessageFlag.EPHEMERAL)
-
-@bot.command
-@lightbulb.command("shop", "Open rewards shop")
-@lightbulb.implements(lightbulb.SlashCommand)
-async def shop_cmd(ctx):
-    if is_banned(ctx.guild_id, ctx.member):
-        await ctx.respond("Banned.", flags=hikari.MessageFlag.EPHEMERAL)
-        return
-    view = ShopView(ctx.guild_id)
-    await ctx.respond("Select a reward:", components=view, flags=hikari.MessageFlag.EPHEMERAL)
-    miru_client.start_view(view)
 
 @bot.command
 @lightbulb.option("role", "Role to allow", type=hikari.Role)
