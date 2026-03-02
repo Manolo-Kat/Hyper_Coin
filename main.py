@@ -306,9 +306,18 @@ async def uncounted_cmd(ctx):
     gdata = get_guild_data(ctx.guild_id)
     if ctx.options.action == "show":
         await ctx.respond(f"Uncounted: {', '.join([f'<#{c}>' for c in gdata['uncounted']]) or 'None'}", flags=hikari.MessageFlag.EPHEMERAL); return
-    if ctx.options.action == "add": gdata['uncounted'].add(ctx.options.channel.id)
-    else: gdata['uncounted'].discard(ctx.options.channel.id)
+    target_id = ctx.options.channel.id if ctx.options.channel else ctx.channel_id
+    if ctx.options.action == "add": gdata['uncounted'].add(target_id)
+    else: gdata['uncounted'].discard(target_id)
     await save_data(); await ctx.respond("Updated.", flags=hikari.MessageFlag.EPHEMERAL)
+    log_id = gdata['config'].get('log_channel')
+    if log_id:
+        emb = hikari.Embed(title="🚫 Uncounted Channels Updated", color=0x5865F2)
+        emb.add_field("Staff", ctx.user.mention, inline=True)
+        emb.add_field("Action", ctx.options.action.capitalize(), inline=True)
+        emb.add_field("Channel", f"<#{target_id}>", inline=True)
+        emb.timestamp = datetime.now(timezone.utc)
+        await bot.rest.create_message(log_id, embed=emb)
 
 @bot.command
 @lightbulb.option("price", "Price per $1", type=int)
@@ -319,6 +328,14 @@ async def set_price(ctx):
     if ctx.user.id != OWNER_ID: return
     get_guild_data(ctx.guild_id)['config'].setdefault('shop_prices', {})[ctx.options.item] = ctx.options.price
     await save_data(); await ctx.respond("Price set.", flags=hikari.MessageFlag.EPHEMERAL)
+    log_id = get_guild_data(ctx.guild_id)['config'].get('log_channel')
+    if log_id:
+        emb = hikari.Embed(title="⚙️ Price Updated", color=0x5865F2)
+        emb.add_field("Staff", ctx.user.mention, inline=True)
+        emb.add_field("Item", ctx.options.item, inline=True)
+        emb.add_field("New Price", f"{ctx.options.price} coins", inline=True)
+        emb.timestamp = datetime.now(timezone.utc)
+        await bot.rest.create_message(log_id, embed=emb)
 
 @bot.command
 @lightbulb.option("amount", "Amount", type=int)
@@ -332,6 +349,15 @@ async def manage_coins(ctx):
     bal = gdata['users'].get(ctx.options.user.id, 0)
     gdata['users'][ctx.options.user.id] = (bal + ctx.options.amount) if ctx.options.action == "add" else max(0, bal - ctx.options.amount)
     await save_data(); await ctx.respond("Updated.", flags=hikari.MessageFlag.EPHEMERAL)
+    log_id = gdata['config'].get('log_channel')
+    if log_id:
+        emb = hikari.Embed(title="💰 Coins Adjusted", color=0x5865F2)
+        emb.add_field("Staff", ctx.user.mention, inline=True)
+        emb.add_field("User", f"<@{ctx.options.user.id}>", inline=True)
+        emb.add_field("Action", ctx.options.action.capitalize(), inline=True)
+        emb.add_field("Amount", str(ctx.options.amount), inline=True)
+        emb.timestamp = datetime.now(timezone.utc)
+        await bot.rest.create_message(log_id, embed=emb)
 
 @bot.command
 @lightbulb.command("help", "Commands")
@@ -340,7 +366,7 @@ async def help_cmd(ctx):
     is_mod = MOD_ROLE_ID in ctx.member.role_ids or ctx.user.id == OWNER_ID
     emb = hikari.Embed(title="📚 Commands", color=0x5865F2)
     emb.add_field("User", "• `/daily` • `/balance` • `/leaderboard` • `/buy` • `/currency` • `/help`")
-    if is_mod: emb.add_field("Staff", "• `/uncounted` • `/coins` • `/banrole` • `/allowedroles` • `/setapproval` • `/setlog` • `/setprice` • `/customize`")
+    if is_mod: emb.add_field("Staff", "• `/uncounted` • `/coins` • `/bannedrole` • `/allowedrole` • `/setapproval` • `/setlog` • `/setprice` • `/customize`")
     await ctx.respond(embed=emb, flags=hikari.MessageFlag.EPHEMERAL)
 
 @bot.command
@@ -388,6 +414,13 @@ async def customize_bot_cmd(ctx):
             async with s.get(ctx.options.avatar) as r:
                 if r.status == 200: await bot.rest.edit_my_user(avatar=await r.read())
         await ctx.respond("Avatar updated.", flags=hikari.MessageFlag.EPHEMERAL)
+        log_id = get_guild_data(ctx.guild_id)['config'].get('log_channel')
+        if log_id:
+            emb = hikari.Embed(title="🖼️ Bot Avatar Updated", color=0x5865F2)
+            emb.add_field("Staff", ctx.user.mention, inline=True)
+            emb.set_image(ctx.options.avatar)
+            emb.timestamp = datetime.now(timezone.utc)
+            await bot.rest.create_message(log_id, embed=emb)
     except Exception as e: await ctx.respond(f"Error: {e}", flags=hikari.MessageFlag.EPHEMERAL)
 
 @bot.command
@@ -398,6 +431,12 @@ async def set_log_cmd(ctx):
     if MOD_ROLE_ID not in ctx.member.role_ids and ctx.user.id != OWNER_ID: return
     get_guild_data(ctx.guild_id)['config']['log_channel'] = ctx.options.channel.id
     await save_data(); await ctx.respond("Log channel set.", flags=hikari.MessageFlag.EPHEMERAL)
+    # Log to the new log channel
+    emb = hikari.Embed(title="📝 Log Channel Updated", color=0x5865F2)
+    emb.add_field("Staff", ctx.user.mention, inline=True)
+    emb.add_field("Channel", f"<#{ctx.options.channel.id}>", inline=True)
+    emb.timestamp = datetime.now(timezone.utc)
+    await bot.rest.create_message(ctx.options.channel.id, embed=emb)
 
 @bot.command
 @lightbulb.command("leaderboard", "Top users")
@@ -421,11 +460,18 @@ async def set_approval_cmd(ctx):
     if MOD_ROLE_ID not in ctx.member.role_ids and ctx.user.id != OWNER_ID: return
     get_guild_data(ctx.guild_id)['config']['approval_channel'] = ctx.options.channel.id
     await save_data(); await ctx.respond("Approval channel set.", flags=hikari.MessageFlag.EPHEMERAL)
+    log_id = get_guild_data(ctx.guild_id)['config'].get('log_channel')
+    if log_id:
+        emb = hikari.Embed(title="📋 Approval Channel Updated", color=0x5865F2)
+        emb.add_field("Staff", ctx.user.mention, inline=True)
+        emb.add_field("Channel", f"<#{ctx.options.channel.id}>", inline=True)
+        emb.timestamp = datetime.now(timezone.utc)
+        await bot.rest.create_message(log_id, embed=emb)
 
 @bot.command
 @lightbulb.option("role", "Role", type=hikari.Role)
 @lightbulb.option("action", "Action", choices=["add", "remove", "show"])
-@lightbulb.command("allowedroles", "Allowed roles")
+@lightbulb.command("allowedrole", "Allowed roles")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def allowed_roles_cmd(ctx):
     if MOD_ROLE_ID not in ctx.member.role_ids and ctx.user.id != OWNER_ID: return
@@ -438,15 +484,30 @@ async def allowed_roles_cmd(ctx):
     else:
         if ctx.options.role.id in roles: roles.remove(ctx.options.role.id)
     await save_data(); await ctx.respond("Updated.", flags=hikari.MessageFlag.EPHEMERAL)
+    log_id = gdata['config'].get('log_channel')
+    if log_id:
+        emb = hikari.Embed(title="✅ Allowed Roles Updated", color=0x5865F2)
+        emb.add_field("Staff", ctx.user.mention, inline=True)
+        emb.add_field("Action", ctx.options.action.capitalize(), inline=True)
+        emb.add_field("Role", f"<@&{ctx.options.role.id}>", inline=True)
+        emb.timestamp = datetime.now(timezone.utc)
+        await bot.rest.create_message(log_id, embed=emb)
 
 @bot.command
 @lightbulb.option("role", "Role", type=hikari.Role)
-@lightbulb.command("banrole", "Set banned role")
+@lightbulb.command("bannedrole", "Set banned role")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def ban_role_cmd(ctx):
     if MOD_ROLE_ID not in ctx.member.role_ids and ctx.user.id != OWNER_ID: return
     get_guild_data(ctx.guild_id)['banned_role'] = ctx.options.role.id
     await save_data(); await ctx.respond("Banned role set.", flags=hikari.MessageFlag.EPHEMERAL)
+    log_id = get_guild_data(ctx.guild_id)['config'].get('log_channel')
+    if log_id:
+        emb = hikari.Embed(title="🚫 Banned Role Updated", color=0x5865F2)
+        emb.add_field("Staff", ctx.user.mention, inline=True)
+        emb.add_field("Role", f"<@&{ctx.options.role.id}>", inline=True)
+        emb.timestamp = datetime.now(timezone.utc)
+        await bot.rest.create_message(log_id, embed=emb)
 
 @bot.command
 @lightbulb.command("ping", "Latency")

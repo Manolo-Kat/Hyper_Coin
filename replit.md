@@ -1,33 +1,35 @@
-# Hyper_Coin Beta
+# Hyper_Coin Beta - Project Documentation
 
-A Discord coin and reward bot built with Python (Hikari, Lightbulb, and Miru).
-
-## Features
-- **Earning**: Users earn coins by chatting and claiming daily rewards.
-- **Shop**: Redeem coins for various real-world gift cards (PayPal, Steam, etc.).
-- **Currency**: Support for multiple display currencies with live exchange rates.
-- **Streaks**: Daily login streaks with coin multipliers.
-- **Moderation**: Staff commands to manage balances, allowed roles, and bot settings.
+## Overview
+A Discord coin/reward bot built with Python (hikari, lightbulb, miru). Users earn coins by chatting and daily rewards, then redeem them for real-world gifts via an approval workflow.
 
 ## Commands
-### User
-- `/daily`: Claim daily reward.
-- `/balance`: Check your coin balance and value.
-- `/leaderboard`: See top users.
-- `/buy`: Purchase items from the shop.
+### User Commands
+- `/daily`: Claim daily reward (1-20 coins, 2x for boosters).
+- `/balance`: Check coin balance and real-world value.
+- `/leaderboard`: See top earners.
+- `/buy`: Purchase gifts (PayPal, Steam, etc.).
 - `/currency`: Set preferred display currency.
-- `/help`: Show command list.
+- `/help`: List all available commands.
 
-### Staff
-- `/coins`: Add/remove coins.
-- `/setprice`: Set item prices.
-- `/setapproval`: Set shop approval channel.
-- `/setlog`: Set purchase log channel.
-- `/banrole`: Restrict users from the bot.
-- `/allowedroles`: Restrict earning to specific roles.
-- `/customize`: Change bot avatar.
+### Staff Commands (Moderator Role/Owner Only)
+- `/coins`: Add or remove coins from a user.
+- `/uncounted`: Exclude channels from coin earning.
+- `/allowedroles`: Restrict coin earning to specific roles.
+- `/banrole`: Set a role that prevents users from using the bot.
+- `/setapproval`: Set the channel for purchase requests.
+- `/setlog`: Set the channel for administrative logs.
+- `/setprice`: Set the coin price for specific gift items.
+- `/customize`: Change the bot's avatar (Owner only).
 
-## Setup
-1. Create a `.env` file with `BOT_TOKEN`.
-2. Install dependencies: `pip install -r requirements.txt`.
-3. Run the bot: `python main.py`.
+## Configuration
+- **Owner ID**: 823310792291385424
+- **Mod Role ID**: 1373312465626202222
+- **Data Storage**: `data.json`
+- **Environment**: `.env` (requires `BOT_TOKEN`)
+
+## Features
+- Multi-currency support via Frankfurter API.
+- Streak system (up to 2.5x multiplier).
+- Server Booster perks (2x coins, higher daily limits).
+- Full logging for administrative actions.
