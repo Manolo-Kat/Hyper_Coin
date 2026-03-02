@@ -12,7 +12,6 @@ from collections import defaultdict
 import json
 import os
 from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')
@@ -50,6 +49,7 @@ def get_guild_data(guild_id):
     if guild_id not in guild_data:
         guild_data[guild_id] = {
             'users': {},
+            'user_prefs': {},
             'cooldowns': {},
             'daily_earnings': defaultdict(int),
             'last_daily': {},
@@ -87,6 +87,7 @@ def load_data():
                     guild_id = int(gid)
                     guild_data[guild_id] = {
                         'users': {int(k): v for k, v in gdata.get('users', {}).items()},
+                        'user_prefs': {int(k): v for k, v in gdata.get('user_prefs', {}).items()},
                         'cooldowns': {},
                         'daily_earnings': defaultdict(int),
                         'last_daily': {int(k): datetime.fromisoformat(v) for k, v in gdata.get('daily', {}).items()},
@@ -119,6 +120,7 @@ async def save_data():
     for gid, gdata in guild_data.items():
         data[str(gid)] = {
             'users': gdata['users'],
+            'user_prefs': gdata.get('user_prefs', {}),
             'daily': {k: v.isoformat() for k, v in gdata['last_daily'].items()},
             'streaks': gdata['streaks'],
             'activity': {k: v.isoformat() for k, v in gdata['last_activity'].items()},
@@ -191,27 +193,6 @@ async def add_coins(guild_id, user_id, amount, member=None):
     await save_data()
     return True
 
-def parse_color(color_input):
-    if not color_input:
-        return 0x5865F2
-    color_input = str(color_input).strip().lower()
-    if color_input.startswith('#'):
-        color_input = color_input[1:]
-    try:
-        return int(color_input, 16)
-    except:
-        pass
-    colors = {
-        'red': 0xFF0000, 'green': 0x00FF00, 'blue': 0x0000FF,
-        'yellow': 0xFFFF00, 'purple': 0x800080, 'pink': 0xFFC0CB,
-        'orange': 0xFFA500, 'gold': 0xFFD700, 'teal': 0x008080,
-        'cyan': 0x00FFFF, 'magenta': 0xFF00FF, 'lime': 0x00FF00,
-        'navy': 0x000080, 'maroon': 0x800000, 'olive': 0x808000,
-        'white': 0xFFFFFF, 'black': 0x000000, 'gray': 0x808080,
-        'grey': 0x808080, 'silver': 0xC0C0C0
-    }
-    return colors.get(color_input, 0x5865F2)
-
 class LeaderboardView(miru.View):
     def __init__(self, guild_id, pages, current_page=0):
         super().__init__(timeout=60.0)
@@ -253,40 +234,6 @@ class LeaderboardView(miru.View):
         self.current_page = len(self.pages) - 1
         await self.update_message(ctx)
 
-def create_chart(guild_id):
-    gdata = get_guild_data(guild_id)
-    fig, ax = plt.subplots(figsize=(10, 6))
-    price_history = gdata['config'].get('price_history', [])
-    if not price_history:
-        price_history = [{'price': gdata['config']['price_per_usd'], 'timestamp': datetime.now(timezone.utc).isoformat()}]
-    prices = [entry['price'] for entry in price_history]
-    timestamps = [datetime.fromisoformat(entry['timestamp']) for entry in price_history]
-    ax.plot(timestamps, prices, color='#5865F2', linewidth=2.5, marker='o', markersize=8)
-    ax.fill_between(timestamps, prices, alpha=0.2, color='#5865F2')
-    if len(prices) > 1:
-        change = prices[-1] - prices[0]
-        change_percent = (change / prices[0]) * 100 if prices[0] != 0 else 0
-        change_color = '#00FF00' if change >= 0 else '#FF0000'
-        change_symbol = '▲' if change >= 0 else '▼'
-        ax.text(0.02, 0.98, f'{change_symbol} {change:+.0f} ({change_percent:+.1f}%)',
-                transform=ax.transAxes, fontsize=14, fontweight='bold',
-                color=change_color, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    ax.set_xlabel('Time', fontsize=12)
-    ax.set_ylabel('Price', fontsize=12)
-    ax.set_title(f'Price History', fontsize=16, fontweight='bold')
-    ax.grid(True, alpha=0.3, linestyle='--')
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    if len(timestamps) > 1:
-        plt.xticks(rotation=45, ha='right')
-    buf = BytesIO()
-    plt.tight_layout()
-    plt.savefig(buf, format='png', dpi=120, bbox_inches='tight', facecolor='white')
-    buf.seek(0)
-    plt.close(fig)
-    return buf
-
 @bot.command
 @lightbulb.option("gmail", "Your PayPal Gmail (PayPal only)", required=False)
 @lightbulb.option("region", "Gift Card Region (Steam, Google Play, Apple, Nitro, Nintendo, Roblox)", required=False)
@@ -309,20 +256,11 @@ async def buy_cmd(ctx):
         await ctx.respond("Minimum purchase is $5.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
-    # Mapping logic
-    mapping = {
-        "PayPal": "PayPal",
-        "Steam": "Steam",
-        "Google Play": "Google Play",
-        "Apple Store": "Apple Store",
-        "Discord Nitro Basic": "Discord Nitro Basic",
-        "Discord Nitro Boost": "Discord Nitro Boost",
-        "Nintendo Card": "Nintendo Card",
-        "Roblox": "Roblox"
-    }
-    mapped_type = mapping.get(gift_type, gift_type)
+    mapped_type = gift_type
     
-    # Validation logic
+    prefs = gdata.get('user_prefs', {}).get(ctx.user.id, {})
+    pref_currency = prefs.get('currency', 'USD').upper()
+    
     region_str = "N/A"
     contact_str = "N/A"
     
@@ -351,7 +289,6 @@ async def buy_cmd(ctx):
         await ctx.respond("Shop is not configured (no approval channel).", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
-    # Deduct coins temporary
     gdata['users'][ctx.user.id] -= required_coins
     await save_data()
 
@@ -360,7 +297,22 @@ async def buy_cmd(ctx):
     embed.add_field("User", f"{ctx.user.username} (<@{ctx.user.id}>)", inline=True)
     embed.add_field("Type", mapped_type, inline=True)
     embed.add_field("Amount", f"${usd_amount} USD", inline=True)
-    embed.add_field("Coins", f"{required_coins}", inline=True)
+    
+    coin_display = f"{required_coins}"
+    if pref_currency != 'USD':
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"https://api.frankfurter.dev/v1/latest?base=USD&symbols={pref_currency}") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        rate = data['rates'].get(pref_currency)
+                        if rate:
+                            val = usd_amount * rate
+                            coin_display += f" ({val:.2f} {pref_currency})"
+        except:
+            pass
+            
+    embed.add_field("Coins", coin_display, inline=True)
     embed.add_field("Region", region_str, inline=True)
     embed.add_field("Contact", contact_str, inline=True)
     embed.timestamp = datetime.now(timezone.utc)
@@ -370,7 +322,6 @@ async def buy_cmd(ctx):
     miru_client.start_view(view)
 
     await ctx.respond("Your purchase request has been submitted. Coins deducted temporarily.", flags=hikari.MessageFlag.EPHEMERAL)
-
 
 class ShopApprovalView(miru.View):
     def __init__(self, guild_id, user_id, reward_type, usd_amount, coin_amount):
@@ -398,7 +349,6 @@ class ShopApprovalView(miru.View):
             await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
             return
         
-        # Refund coins
         gdata = get_guild_data(self.guild_id)
         gdata['users'][self.user_id] = gdata['users'].get(self.user_id, 0) + self.coin_amount
         await save_data()
@@ -430,9 +380,17 @@ class ShopAcceptModal(miru.Modal):
             await user.send(embed=embed)
             await ctx.respond("Code sent to user.", flags=hikari.MessageFlag.EPHEMERAL)
             await ctx.edit_response(content=f"Request approved and code sent to <@{self.user_id}>.", embed=None, components=[])
+            
+            gdata = get_guild_data(ctx.guild_id)
+            log_channel_id = gdata['config'].get('log_channel')
+            if log_channel_id:
+                log_embed = hikari.Embed(title="✅ Purchase Completed", color=0x00FF00)
+                log_embed.add_field("User", f"<@{self.user_id}>", inline=True)
+                log_embed.add_field("Item", f"{self.reward_type} (${self.usd_amount})", inline=True)
+                log_embed.timestamp = datetime.now(timezone.utc)
+                await bot.rest.create_message(log_channel_id, embed=log_embed)
         except:
             await ctx.respond("Failed to DM user. Please contact them manually.", flags=hikari.MessageFlag.EPHEMERAL)
-
 
 @bot.listen(hikari.GuildMessageCreateEvent)
 async def on_message(event):
@@ -526,95 +484,15 @@ async def set_price(ctx):
     gdata = get_guild_data(ctx.guild_id)
     item = ctx.options.item
     new_price = ctx.options.price
-    shop_prices = gdata['config'].setdefault('shop_prices', {})
-    old_price = shop_prices.get(item, 100)
-    shop_prices[item] = new_price
-    gdata['config'].setdefault('price_history', []).append({
-        'item': item,
-        'price': new_price,
-        'timestamp': datetime.now(timezone.utc).isoformat()
-    })
+    gdata['config'].setdefault('shop_prices', {})[item] = new_price
     await save_data()
-    await ctx.respond(f"Price for **{item}** updated: {old_price} -> {new_price}", flags=hikari.MessageFlag.EPHEMERAL)
+    await ctx.respond(f"Price for **{item}** set to **{new_price}** coins per $1 USD.", flags=hikari.MessageFlag.EPHEMERAL)
 
 @bot.command
-@lightbulb.option("role", "Role to allow", type=hikari.Role)
-@lightbulb.option("action", "add or remove", choices=["add", "remove"])
-@lightbulb.command("allowedroles", "Manage roles allowed to earn coins")
-@lightbulb.implements(lightbulb.SlashCommand)
-async def allowed_roles_cmd(ctx):
-    if MOD_ROLE_ID not in ctx.member.role_ids and ctx.user.id != OWNER_ID:
-        await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
-        return
-    gdata = get_guild_data(ctx.guild_id)
-    role = ctx.options.role
-    if ctx.options.action == "add":
-        if role.id not in gdata['allowed_roles']:
-            gdata['allowed_roles'].append(role.id)
-        await ctx.respond(f"Added {role.mention}", flags=hikari.MessageFlag.EPHEMERAL)
-    else:
-        if role.id in gdata['allowed_roles']:
-            gdata['allowed_roles'].remove(role.id)
-        await ctx.respond(f"Removed {role.mention}", flags=hikari.MessageFlag.EPHEMERAL)
-    await save_data()
-
-@bot.command
-@lightbulb.command("leaderboard", "Show leaderboard")
-@lightbulb.implements(lightbulb.SlashCommand)
-async def leaderboard_cmd(ctx):
-    gdata = get_guild_data(ctx.guild_id)
-    users = sorted(gdata['users'].items(), key=lambda x: x[1], reverse=True)
-    if not users:
-        await ctx.respond("No data.", flags=hikari.MessageFlag.EPHEMERAL)
-        return
-    pages = []
-    for i in range(0, len(users), 10):
-        chunk = users[i:i+10]
-        desc = "\n".join([f"**#{j+i+1}** <@{u[0]}> - {u[1]} coins" for j, u in enumerate(chunk)])
-        pages.append(hikari.Embed(title="🏆 Leaderboard", description=desc, color=0x5865F2))
-    view = LeaderboardView(ctx.guild_id, pages)
-    await ctx.respond(embed=pages[0], components=view, flags=hikari.MessageFlag.EPHEMERAL)
-
-@bot.command
-@lightbulb.option("currency", "Currency code", required=True)
 @lightbulb.option("amount", "Amount of coins", type=int)
-@lightbulb.command("exchange", "Convert coins to currency")
-@lightbulb.implements(lightbulb.SlashCommand)
-async def exchange_cmd(ctx):
-    gdata = get_guild_data(ctx.guild_id)
-    usd = ctx.options.amount / gdata['config'].get('price_per_usd', 100)
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"https://api.frankfurter.dev/v1/latest?base=USD&symbols={ctx.options.currency.upper()}") as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    rate = data['rates'].get(ctx.options.currency.upper())
-                    if rate:
-                        val = usd * rate
-                        await ctx.respond(f"**{ctx.options.amount} coins** is approx **{val:.2f} {ctx.options.currency.upper()}**", flags=hikari.MessageFlag.EPHEMERAL)
-                        return
-        await ctx.respond("Currency not found.", flags=hikari.MessageFlag.EPHEMERAL)
-    except:
-        await ctx.respond("Error fetching rates.", flags=hikari.MessageFlag.EPHEMERAL)
-
-@bot.command
-@lightbulb.option("channel", "Approval channel", type=hikari.TextableGuildChannel)
-@lightbulb.command("setapproval", "Set approval channel")
-@lightbulb.implements(lightbulb.SlashCommand)
-async def set_approval(ctx):
-    if MOD_ROLE_ID not in ctx.member.role_ids and ctx.user.id != OWNER_ID:
-        await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
-        return
-    gdata = get_guild_data(ctx.guild_id)
-    gdata['config']['approval_channel'] = ctx.options.channel.id
-    await save_data()
-    await ctx.respond(f"Approval set to {ctx.options.channel.mention}", flags=hikari.MessageFlag.EPHEMERAL)
-
-@bot.command
-@lightbulb.option("amount", "Amount", type=int)
-@lightbulb.option("user", "User", type=hikari.User)
-@lightbulb.option("action", "add or remove", choices=["add", "remove"])
-@lightbulb.command("coins", "Manage coins")
+@lightbulb.option("user", "User to manage", type=hikari.User)
+@lightbulb.option("action", "add/remove", choices=["add", "remove"])
+@lightbulb.command("coins", "Add or remove coins from a user")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def manage_coins(ctx):
     if MOD_ROLE_ID not in ctx.member.role_ids and ctx.user.id != OWNER_ID:
@@ -648,10 +526,10 @@ async def ban_role_cmd(ctx):
 async def help_cmd(ctx):
     is_mod = MOD_ROLE_ID in ctx.member.role_ids or ctx.user.id == OWNER_ID
     embed = hikari.Embed(title="📚 Commands", color=0x5865F2)
-    u_cmds = "• `/daily` • `/balance` • `/exchange` • `/leaderboard` • `/shop` • `/help`"
+    u_cmds = "• `/daily` • `/balance` • `/leaderboard` • `/buy` • `/currency` • `/help`"
     embed.add_field("User Commands", u_cmds)
     if is_mod:
-        m_cmds = "• `/uncounted` • `/coins` • `/banrole` • `/allowedroles` • `/setapproval` • `/setprice`"
+        m_cmds = "• `/uncounted` • `/coins` • `/banrole` • `/allowedroles` • `/setapproval` • `/setlog` • `/setprice` • `/customize`"
         embed.add_field("Staff Commands", m_cmds)
     await ctx.respond(embed=embed, flags=hikari.MessageFlag.EPHEMERAL)
 
@@ -664,10 +542,164 @@ async def balance_cmd(ctx):
     gdata = get_guild_data(ctx.guild_id)
     bal = gdata['users'].get(user.id, 0)
     mult = get_streak_mult(ctx.guild_id, user.id)
+    
+    prefs = gdata.get('user_prefs', {}).get(user.id, {})
+    currency = prefs.get('currency', 'USD').upper()
+    
+    price_per_usd = gdata['config'].get('price_per_usd', 100)
+    usd_val = bal / price_per_usd
+    currency_str = f"(${usd_val:.2f} USD)"
+    
+    if currency != 'USD':
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"https://api.frankfurter.dev/v1/latest?base=USD&symbols={currency}") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        rate = data['rates'].get(currency)
+                        if rate:
+                            val = usd_val * rate
+                            currency_str = f"({val:.2f} {currency})"
+        except:
+            pass
+
     embed = hikari.Embed(title=f"💰 {user.username}'s Balance", color=0xFFD700)
+    embed.set_thumbnail(user.avatar_url or user.default_avatar_url)
     embed.add_field("Coins", f"{bal}", inline=True)
+    embed.add_field("Value", currency_str, inline=True)
     embed.add_field("Multiplier", f"x{mult}", inline=True)
     await ctx.respond(embed=embed)
+
+@bot.command
+@lightbulb.option("currency", "Currency code (e.g. EUR, GBP, JPY)", required=True)
+@lightbulb.command("currency", "Change your preferred display currency")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def change_currency_cmd(ctx):
+    gdata = get_guild_data(ctx.guild_id)
+    currency = ctx.options.currency.upper()
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://api.frankfurter.dev/v1/latest?symbols={currency}") as resp:
+                if resp.status != 200:
+                    await ctx.respond(f"Invalid currency code: {currency}", flags=hikari.MessageFlag.EPHEMERAL)
+                    return
+    except:
+        await ctx.respond("Error validating currency. Please try again later.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+
+    if 'user_prefs' not in gdata:
+        gdata['user_prefs'] = {}
+    if ctx.user.id not in gdata['user_prefs']:
+        gdata['user_prefs'][ctx.user.id] = {}
+        
+    gdata['user_prefs'][ctx.user.id]['currency'] = currency
+    await save_data()
+    await ctx.respond(f"Your preferred currency has been set to **{currency}**", flags=hikari.MessageFlag.EPHEMERAL)
+
+@bot.command
+@lightbulb.option("banner", "New banner URL", required=False)
+@lightbulb.option("avatar", "New avatar URL", required=False)
+@lightbulb.command("customize", "Change bot's appearance (Owner only)")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def customize_bot_cmd(ctx):
+    if ctx.user.id != OWNER_ID:
+        await ctx.respond("Owner only.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+    
+    avatar_url = ctx.options.avatar
+    
+    if not avatar_url:
+        await ctx.respond("Please provide an avatar URL.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(avatar_url) as resp:
+                if resp.status == 200:
+                    await bot.rest.edit_my_user(avatar=await resp.read())
+        
+        await ctx.respond("Bot appearance updated.", flags=hikari.MessageFlag.EPHEMERAL)
+    except Exception as e:
+        await ctx.respond(f"Error: {e}", flags=hikari.MessageFlag.EPHEMERAL)
+
+@bot.command
+@lightbulb.option("channel", "Log channel", type=hikari.TextableGuildChannel)
+@lightbulb.command("setlog", "Set the log channel for purchases")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def set_log_cmd(ctx):
+    if MOD_ROLE_ID not in ctx.member.role_ids and ctx.user.id != OWNER_ID:
+        await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+    gdata = get_guild_data(ctx.guild_id)
+    gdata['config']['log_channel'] = ctx.options.channel.id
+    await save_data()
+    await ctx.respond(f"Log channel set to {ctx.options.channel.mention}", flags=hikari.MessageFlag.EPHEMERAL)
+
+@bot.command
+@lightbulb.command("leaderboard", "Show coin leaderboard")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def leaderboard_cmd(ctx):
+    gdata = get_guild_data(ctx.guild_id)
+    sorted_users = sorted(gdata['users'].items(), key=lambda x: x[1], reverse=True)
+    if not sorted_users:
+        await ctx.respond("No users yet.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+    
+    pages = []
+    for i in range(0, len(sorted_users), 10):
+        embed = hikari.Embed(title="🏆 Leaderboard", color=0xFFD700)
+        desc = ""
+        for rank, (u_id, coins) in enumerate(sorted_users[i:i+10], start=i+1):
+            desc += f"**#{rank}** <@{u_id}>: {coins} coins\n"
+        embed.description = desc
+        embed.set_footer(text=f"Page {i//10 + 1} of {(len(sorted_users)-1)//10 + 1}")
+        pages.append(embed)
+    
+    view = LeaderboardView(ctx.guild_id, pages)
+    await ctx.respond(embed=pages[0], components=view)
+    miru_client.start_view(view)
+
+@bot.command
+@lightbulb.option("channel", "Approval channel", type=hikari.TextableGuildChannel)
+@lightbulb.command("setapproval", "Set the channel for purchase approvals")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def set_approval_cmd(ctx):
+    if MOD_ROLE_ID not in ctx.member.role_ids and ctx.user.id != OWNER_ID:
+        await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+    gdata = get_guild_data(ctx.guild_id)
+    gdata['config']['approval_channel'] = ctx.options.channel.id
+    await save_data()
+    await ctx.respond(f"Approval channel set to {ctx.options.channel.mention}", flags=hikari.MessageFlag.EPHEMERAL)
+
+@bot.command
+@lightbulb.option("role", "Role to allow", type=hikari.Role)
+@lightbulb.option("action", "add/remove/show", choices=["add", "remove", "show"])
+@lightbulb.command("allowedroles", "Manage roles allowed to earn coins")
+@lightbulb.implements(lightbulb.SlashCommand)
+async def allowed_roles_cmd(ctx):
+    if MOD_ROLE_ID not in ctx.member.role_ids and ctx.user.id != OWNER_ID:
+        await ctx.respond("No permission.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+    gdata = get_guild_data(ctx.guild_id)
+    action = ctx.options.action
+    if action == "show":
+        roles = ", ".join([f"<@&{r}>" for r in gdata.get('allowed_roles', [])]) or "None"
+        await ctx.respond(f"Allowed roles: {roles}", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+    role = ctx.options.role
+    if action == "add":
+        if 'allowed_roles' not in gdata: gdata['allowed_roles'] = []
+        if role.id not in gdata['allowed_roles']:
+            gdata['allowed_roles'].append(role.id)
+            await save_data()
+            await ctx.respond(f"Added {role.mention} to allowed roles.", flags=hikari.MessageFlag.EPHEMERAL)
+    else:
+        if 'allowed_roles' in gdata and role.id in gdata['allowed_roles']:
+            gdata['allowed_roles'].remove(role.id)
+            await save_data()
+            await ctx.respond(f"Removed {role.mention} from allowed roles.", flags=hikari.MessageFlag.EPHEMERAL)
 
 @bot.command
 @lightbulb.command("ping", "Check latency")
