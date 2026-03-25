@@ -1,4 +1,6 @@
 import os
+from dotenv import load_dotenv
+load_dotenv(override=True)
 
 OWNER_ID    = int(os.environ.get('OWNER_ID',    '823310792291385424'))
 MOD_ROLE_ID = int(os.environ.get('MOD_ROLE_ID', '1373312465626202222'))

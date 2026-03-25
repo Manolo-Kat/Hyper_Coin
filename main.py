@@ -3,9 +3,12 @@ Hyper Coin Bot — main entry point
 Loads extensions and handles bot lifecycle.
 """
 
+import os
+from dotenv import load_dotenv
+load_dotenv(override=True)  # .env values always take precedence
+
 import asyncio
 import logging
-import os
 import random
 from collections import defaultdict
 from datetime import datetime, timezone
