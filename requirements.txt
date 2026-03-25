@@ -2,7 +2,5 @@ hikari==2.0.0.dev124
 hikari-lightbulb==2.3.5
 hikari-miru==4.1.0
 aiohttp==3.13.3
-aiofiles==25.1.0
-pillow==12.1.0
-matplotlib==3.10.8
+aiosqlite==0.21.0
 python-dotenv==1.2.1
