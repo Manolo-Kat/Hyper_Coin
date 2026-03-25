@@ -348,8 +348,7 @@ async def drop_cmd(ctx: lightbulb.SlashContext):
     )
     resp = await ctx.respond(embed=emb, components=view)
     msg  = await resp.message()
-    view.message = msg
-    ctx.bot.d.miru.start_view(view)
+    ctx.bot.d.miru.start_view(view, bind_to=msg)
 
 
 @plugin.command

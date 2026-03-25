@@ -85,8 +85,7 @@ async def auto_drop_loop():
                     msg = await bot.rest.create_message(
                         cfg["drop_channel"], embed=emb, components=view
                     )
-                    view.message = msg
-                    miru_client.start_view(view)
+                    miru_client.start_view(view, bind_to=msg)
                 except Exception as e:
                     logger.warning(f"Auto-drop failed (guild {gid}): {e}")
         except Exception as e:
