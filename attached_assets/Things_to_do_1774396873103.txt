@@ -1,0 +1,646 @@
+Hyper Coin — TO DO LIST
+22 things to fix, improve, or add.
+Written so any developer or AI assistant can read and implement these directly.
+
+Difficulty levels:
+  EASY   = small change, won't break anything else
+  MEDIUM = needs some thought and new logic
+  HARD   = bigger rewrite, plan before starting
+
+Tags tell you what kind of task it is:
+  perf       = makes the bot faster or lighter
+  bugfix     = fixes something broken
+  security   = closes an exploit or hardens the bot
+  feature    = something new to add
+  cleanup    = tidying up code structure
+  scale      = helps the bot handle more users/servers
+
+Items marked [NEW] are bugs the bot owner personally found and reported.
+
+─────────────────────────────────────────────────────────────────
+SECTION 1 — DO THESE FIRST (biggest performance wins)
+─────────────────────────────────────────────────────────────────
+
+TASK 1 — Stop saving the whole file on every single message
+Difficulty : EASY
+Tags       : perf
+Agreed by  : All 4 sources (You, Gemini, DeepSeek, ChatGPT)
+
+Right now save_data() gets called every time anyone sends a message
+because add_coins() calls it. On a busy server that's hundreds of
+full file rewrites per minute. It's the #1 performance problem.
+
+The fix: use asyncio.Event() as a dirty flag. When data changes,
+call event.set(). A background loop waits for that signal, saves
+the file, then clears the flag. This reacts instantly to changes
+but still batches rapid writes — better than a plain sleep(30) loop.
+
+    save_event = asyncio.Event()
+
+    def mark_dirty():
+        save_event.set()
+
+    async def autosave_loop():
+        while True:
+            await save_event.wait()   # waits until mark_dirty() is called
+            save_event.clear()
+            await asyncio.sleep(5)    # small delay to batch rapid changes
+            await save_data()
+
+    # Start this in on_start():
+    asyncio.create_task(autosave_loop())
+
+Now replace almost every "await save_data()" with "mark_dirty()".
+Only keep immediate saves for purchases and admin coin edits
+because those are high-stakes and need to persist right away.
+
+─────────────────────────────────────────────────────────────────
+
+TASK 2 — Stop creating a new internet connection on every command
+Difficulty : EASY
+Tags       : perf
+Agreed by  : You, ChatGPT
+
+Every time someone runs /balance or /buy, the bot opens a brand new
+aiohttp session, uses it once, and throws it away. That's wasteful.
+
+The fix: make one session when the bot starts and reuse it everywhere.
+
+    http_session = None
+
+    @bot.listen(hikari.StartedEvent)
+    async def on_start(_):
+        global http_session
+        http_session = aiohttp.ClientSession()
+        load_data()
+        asyncio.create_task(autosave_loop())
+
+    @bot.listen(hikari.StoppingEvent)
+    async def on_stop(_):
+        await http_session.close()
+
+Then replace every "async with aiohttp.ClientSession() as s:" with
+just "async with http_session.get(...) as r:".
+
+─────────────────────────────────────────────────────────────────
+
+TASK 3 — Cache currency exchange rates instead of fetching live every time
+Difficulty : EASY
+Tags       : perf
+Agreed by  : All 4 sources
+
+Right now every /balance call hits the currency API. If 10 people
+check their balance at the same time that's 10 separate web requests.
+Exchange rates don't change every second so there's no reason for this.
+
+The fix: store the rate in memory with a timestamp. If the stored rate
+is less than 60 minutes old, use it. Only fetch from the API when it's
+actually stale. Use asyncio.Lock so two commands don't both fetch at
+the same time when the cache is empty.
+
+    rate_cache = {}
+    rate_lock = asyncio.Lock()
+
+    async def get_exchange_rate(currency):
+        async with rate_lock:
+            if currency in rate_cache:
+                rate, fetched_at = rate_cache[currency]
+                age = (datetime.now(timezone.utc) - fetched_at).seconds
+                if age < 3600:
+                    return rate
+        async with http_session.get(
+            f"https://api.frankfurter.dev/v1/latest?base=USD&symbols={currency}"
+        ) as r:
+            data = await r.json()
+            rate = data['rates'].get(currency)
+            rate_cache[currency] = (rate, datetime.now(timezone.utc))
+            return rate
+
+Replace all the inline currency fetching in /balance and /buy
+with a call to this function.
+
+─────────────────────────────────────────────────────────────────
+
+TASK 4 — Add a cooldown so messages don't earn coins every single time
+Difficulty : EASY
+Tags       : security, perf
+Agreed by  : You, ChatGPT
+
+Right now someone could spam short messages and earn coins extremely
+fast. The bot also calls add_coins() for literally every message sent
+in the server which hammers it unnecessarily.
+
+The fix: track when each user last earned coins from a message.
+Only award coins if at least 60 seconds have passed. Also optionally
+skip messages shorter than 5 characters.
+
+    message_cooldowns = {}
+
+    @bot.listen(hikari.GuildMessageCreateEvent)
+    async def on_message(event):
+        if event.is_bot or not event.guild_id:
+            return
+        if len(event.content or "") < 5:
+            return
+        now = datetime.now(timezone.utc)
+        last = message_cooldowns.get(event.author_id)
+        if last and (now - last).total_seconds() < 60:
+            return
+        message_cooldowns[event.author_id] = now
+        gdata = get_guild_data(event.guild_id)
+        if event.channel_id in gdata['uncounted']:
+            return
+        if is_banned(event.guild_id, event.member):
+            return
+        await add_coins(event.guild_id, event.author_id, 1, event.member)
+
+─────────────────────────────────────────────────────────────────
+SECTION 2 — BUG FIXES (original problems found in code review)
+─────────────────────────────────────────────────────────────────
+
+TASK 5 — Fix streaks — they never reset when a user misses a day
+Difficulty : EASY
+Tags       : bugfix
+
+If a user misses a day their streak just... stays there forever.
+It never resets to 0. The check needs to handle both cases:
+under 24h = too early, over 48h = missed a day, reset streak.
+
+    if ctx.user.id in gdata['last_daily']:
+        hours_passed = (now - gdata['last_daily'][ctx.user.id]).total_seconds() / 3600
+        if hours_passed < 24:
+            # too early — show countdown (see Task 19)
+            return
+        if hours_passed > 48:
+            gdata['streaks'][ctx.user.id] = 0  # missed a day, reset
+
+─────────────────────────────────────────────────────────────────
+
+TASK 6 — daily_earnings resets when the bot restarts (exploit)
+Difficulty : EASY
+Tags       : bugfix, security
+
+daily_earnings is stored only in memory. When the bot restarts,
+it's gone. Users can earn past their daily limit by restarting the bot.
+Add it to save_data() and load_data() so it persists.
+
+In save_data() add:
+    'daily_earnings': dict(gdata['daily_earnings'])
+
+In load_data() add:
+    gdata['daily_earnings'] = defaultdict(int, gdata.get('daily_earnings', {}))
+
+─────────────────────────────────────────────────────────────────
+
+TASK 7 — Coins are deducted before a mod approves the purchase
+Difficulty : MEDIUM
+Tags       : bugfix
+
+When someone runs /buy their coins are removed immediately.
+If the bot crashes between submission and mod approval, the coins
+are just gone. No refund happens automatically.
+
+The fix: store the purchase as "pending" and don't touch coins yet.
+Only finalize the deduction when a mod approves. Refund on rejection.
+
+Add a 'pending_purchases' dict to guild_data:
+    gdata.setdefault('pending_purchases', {})[str(message_id)] = {
+        'user_id': ctx.user.id,
+        'type': ctx.options.type,
+        'amount': ctx.options.amount,
+        'coins': req
+    }
+
+Don't deduct coins at /buy time. Deduct inside the approve callback.
+Refund inside the reject callback. Remove from pending_purchases
+once either action is taken.
+
+─────────────────────────────────────────────────────────────────
+
+TASK 8 — Silent errors everywhere (bare except: pass)
+Difficulty : EASY
+Tags       : bugfix, security
+
+There are several places in the code that catch all exceptions
+and do nothing with them. This means when something breaks you
+have no idea why. API goes down? Silent. DM fails? Silent.
+
+Replace every instance of:
+    except: pass
+
+With:
+    except Exception as e:
+        logger.warning(f"[describe what failed here]: {e}")
+
+─────────────────────────────────────────────────────────────────
+
+TASK 9 — Two messages at the same time can corrupt the balance
+Difficulty : EASY
+Tags       : security, bugfix
+
+If the same user sends two messages at almost the exact same time,
+both can read the same balance, both add coins, and both write back.
+The second write overwrites the first and one update is lost.
+
+The fix: give each user their own asyncio.Lock and acquire it
+before modifying their balance.
+
+    user_locks = defaultdict(asyncio.Lock)
+
+    async def add_coins(guild_id, user_id, amount, member=None):
+        async with user_locks[user_id]:
+            # ... rest of the existing code unchanged
+
+─────────────────────────────────────────────────────────────────
+
+TASK 10 — OWNER_ID and MOD_ROLE_ID are hardcoded in the script
+Difficulty : EASY
+Tags       : security, cleanup
+Agreed by  : You, DeepSeek
+
+These should be in the .env file like BOT_TOKEN is.
+Hardcoding them means you have to edit source code just to change
+who the owner is or update a role ID.
+
+In .env add:
+    OWNER_ID=823310792291385424
+    MOD_ROLE_ID=1373312465626202222
+
+In the script replace the hardcoded values with:
+    OWNER_ID = int(config_env.get('OWNER_ID'))
+    MOD_ROLE_ID = int(config_env.get('MOD_ROLE_ID'))
+
+─────────────────────────────────────────────────────────────────
+SECTION 3 — YOUR BUGS (things you noticed yourself) [NEW]
+─────────────────────────────────────────────────────────────────
+
+TASK 11 — /balance embed is missing the emoji and avatar [NEW]
+Difficulty : EASY
+Tags       : bugfix
+
+The balance embed lost its coin emoji and the user profile picture
+isn't showing correctly. Fix both.
+
+    emb = hikari.Embed(title=f"💰 Balance", color=0xFFD700)
+    emb.set_author(name=user.username)
+    emb.set_thumbnail(user.avatar_url or user.default_avatar_url)
+    emb.add_field("🪙 Coins", f"{bal:,}", inline=True)
+
+─────────────────────────────────────────────────────────────────
+
+TASK 12 — Show how much of the daily limit the user has used [NEW]
+Difficulty : EASY
+Tags       : bugfix, feature
+
+Users have no idea how close they are to their daily coin cap.
+Show it in /balance as a visual progress bar using Unicode blocks.
+This looks much better than just showing two numbers.
+
+    today = datetime.now(timezone.utc).date()
+    daily_key = f"{user.id}_{today}"
+    earned_today = gdata['daily_earnings'].get(daily_key, 0)
+    daily_limit = 400 if is_booster(member) else 200
+    filled = int((earned_today / daily_limit) * 10)
+    bar = "█" * filled + "░" * (10 - filled)
+    emb.add_field("Daily limit", f"{bar}  {earned_today} / {daily_limit}", inline=False)
+
+─────────────────────────────────────────────────────────────────
+
+TASK 13 — Show whether the user is a booster in /balance [NEW]
+Difficulty : EASY
+Tags       : bugfix
+
+Users can't tell from the balance embed whether their booster bonus
+is active. Add a field that makes it clear.
+
+    if is_booster(member):
+        emb.add_field("Booster", "⚡ Active — 2x coins, 400/day cap", inline=True)
+    else:
+        emb.add_field("Booster", "Not boosting", inline=True)
+
+─────────────────────────────────────────────────────────────────
+
+TASK 14 — Booster benefits aren't applying correctly [NEW]
+Difficulty : MEDIUM
+Tags       : bugfix
+
+The 2x booster multiplier might not be working as expected.
+Go through add_coins() and daily_cmd() carefully and check:
+
+  1. The multiplier (mult *= 2) must happen BEFORE the daily cap
+     check, not after. Otherwise the cap might cut off the boosted amount.
+
+  2. Make sure is_booster() is getting a real member object.
+     In on_message the member is event.member — confirm it's not None.
+     In daily_cmd it's ctx.member — confirm it's fetched properly.
+
+  3. After fixing: verify a booster gets up to 400 coins/day
+     and the 2x multiplier shows correctly in /balance.
+
+─────────────────────────────────────────────────────────────────
+
+TASK 15 — Streak counter needs an audit [NEW]
+Difficulty : EASY
+Tags       : bugfix
+
+This is connected to Task 5. Once the reset logic is fixed, also
+double check the rest of the streak system:
+
+  - Streak increments only if claimed within 24–48 hours (not sooner)
+  - Streak resets if more than 48 hours pass
+  - The multiplier values in the dict match what the bot tells users
+  - min(streak, 7) is already there — that part is fine, leave it
+
+─────────────────────────────────────────────────────────────────
+
+TASK 16 — Bring back the /drop command [NEW]
+Difficulty : MEDIUM
+Tags       : feature
+
+Add a coin drop event system. Two ways it should work:
+
+  Manual: Staff runs /drop [amount] and it posts a message in the
+  current channel with a "Claim" button. First person to click wins.
+
+  Automatic: A background task drops a random amount (5–50 coins)
+  every 30–90 minutes in a configured drop channel. No staff needed.
+
+    async def auto_drop_loop():
+        while True:
+            wait_time = random.randint(1800, 5400)  # 30–90 minutes
+            await asyncio.sleep(wait_time)
+            drop_channel = gdata['config'].get('drop_channel')
+            if not drop_channel:
+                continue
+            amount = random.randint(5, 50)
+            view = DropClaimView(amount)
+            await bot.rest.create_message(
+                drop_channel,
+                embed=hikari.Embed(
+                    title="🎁 Coin Drop!",
+                    description=f"**{amount} coins** up for grabs! First to click wins.",
+                    color=0xFFD700
+                ),
+                components=view
+            )
+            miru_client.start_view(view)
+
+Add a /setdrop command so staff can configure which channel gets the drops.
+Add a /drop command for manual drops with an optional amount option.
+
+─────────────────────────────────────────────────────────────────
+
+TASK 17 — Edit the purchase embed when a mod accepts or rejects [NEW]
+Difficulty : EASY
+Tags       : feature, bugfix
+
+Right now after a mod acts on a purchase request nothing visible
+changes about the original message (the buttons stay, the embed stays).
+Don't delete the message — edit it to show what happened and who did it.
+This keeps a clean audit trail in the approval channel.
+
+In the approve callback after everything is done:
+    approved_emb = hikari.Embed(title="✅ Approved", color=0x00FF00)
+    approved_emb.description = (
+        f"**Approved by:** {ctx.user.mention}\n"
+        f"**User:** <@{self.uid}>\n"
+        f"**Item:** {self.rtype} (${self.amt})"
+    )
+    await bot.rest.edit_message(ctx.channel_id, ctx.message.id,
+                                 embed=approved_emb, components=[])
+
+In the reject callback:
+    rejected_emb = hikari.Embed(title="❌ Rejected", color=0xFF0000)
+    rejected_emb.description = (
+        f"**Rejected by:** {ctx.user.mention}\n"
+        f"**User:** <@{self.uid}>\n"
+        f"**Item:** {self.rtype} (${self.amt})"
+    )
+    await bot.rest.edit_message(ctx.channel_id, ctx.message.id,
+                                 embed=rejected_emb, components=[])
+
+─────────────────────────────────────────────────────────────────
+
+TASK 18 — Add a $20 per week purchase limit [NEW]
+Difficulty : MEDIUM
+Tags       : feature, security
+
+Users should have a maximum of $20 worth of purchases per week.
+When they hit the limit they can't buy again until Monday resets it.
+
+Important: always store the week key as "userid_year_weeknumber"
+not just "userid_weeknumber". Without the year, week 1 of 2025 and
+week 1 of 2026 look identical in the dictionary and clash.
+
+    from datetime import timedelta
+
+    now = datetime.now(timezone.utc)
+    iso = now.isocalendar()
+    week_key = f"{ctx.user.id}_{iso.year}_{iso.week}"
+
+    weekly_spent = gdata.setdefault('weekly_spent', {})
+    spent_this_week = weekly_spent.get(week_key, 0)
+
+    if spent_this_week + ctx.options.amount > 20:
+        days_until_monday = (7 - now.weekday()) % 7 or 7
+        reset_time = now + timedelta(days=days_until_monday)
+        reset_time = reset_time.replace(hour=0, minute=0, second=0, microsecond=0)
+        reset_ts = int(reset_time.timestamp())
+        await ctx.respond(
+            f"You've hit the $20/week limit (${spent_this_week} spent).\n"
+            f"Resets <t:{reset_ts}:R>.",
+            flags=hikari.MessageFlag.EPHEMERAL
+        )
+        return
+
+    # After purchase goes through:
+    weekly_spent[week_key] = spent_this_week + ctx.options.amount
+    mark_dirty()
+
+─────────────────────────────────────────────────────────────────
+
+TASK 19 — Replace "wait tomorrow" with a real Discord countdown [NEW]
+Difficulty : EASY
+Tags       : feature
+
+Instead of telling users to wait until tomorrow (vague), calculate
+the exact time their cooldown expires and use Discord's native
+timestamp format. Discord renders it as a live ticking countdown
+in the user's own timezone and language — "in 14 hours", "in 3 minutes".
+It's one line of code and it's the best possible solution for this.
+
+    next_claim = gdata['last_daily'][ctx.user.id] + timedelta(hours=24)
+    next_ts = int(next_claim.timestamp())
+    await ctx.respond(
+        f"Already claimed today! Come back <t:{next_ts}:R>.",
+        flags=hikari.MessageFlag.EPHEMERAL
+    )
+
+The :R format means "relative time" — Discord handles everything else.
+No custom timer, no polling, works in every language automatically.
+
+─────────────────────────────────────────────────────────────────
+
+TASK 20 — Approval buttons stop working after the bot restarts [NEW]
+Difficulty : HARD
+Tags       : bugfix, feature
+
+This is a big one. When the bot restarts, all the miru Views that
+were attached to pending purchase messages are gone from memory.
+The buttons are still visible in Discord but clicking them does nothing.
+
+The fix is to store every pending purchase in data.json when it's
+created, then re-attach a new ShopApprovalView to each one on startup.
+
+Step 1 — when a purchase request is posted, save it:
+    gdata.setdefault('pending_purchases', {})[str(message_id)] = {
+        'user_id': ctx.user.id,
+        'type': ctx.options.type,
+        'amount': ctx.options.amount,
+        'coins': req,
+        'channel_id': approval_channel_id,
+        'message_id': message_id
+    }
+    mark_dirty()
+
+Step 2 — in on_start(), after load_data(), loop through all
+pending purchases and re-attach views to the existing messages:
+    for gid_str, gdata in guild_data.items():
+        gid = int(gid_str)
+        for msg_id_str, p in gdata.get('pending_purchases', {}).items():
+            view = ShopApprovalView(
+                gid,
+                p['user_id'],
+                p['type'],
+                p['amount'],
+                p['coins']
+            )
+            miru_client.start_view(view, bind_to=int(msg_id_str))
+
+Step 3 — in the approve and reject callbacks, remove the entry:
+    gdata.get('pending_purchases', {}).pop(str(self.message_id), None)
+    mark_dirty()
+
+This works because miru can bind a new View to an existing Discord
+message by its message ID — the buttons are already there, you're
+just re-attaching the logic to them.
+
+─────────────────────────────────────────────────────────────────
+SECTION 4 — CODE QUALITY
+─────────────────────────────────────────────────────────────────
+
+TASK 21 — Split the bot into separate files
+Difficulty : MEDIUM
+Tags       : cleanup, scale
+Agreed by  : You, ChatGPT
+
+Everything is in one giant file right now. Split it up so each part
+of the bot lives in its own file. This makes it much easier to
+find things, fix bugs, and add new features without breaking others.
+
+Suggested structure:
+    bot/
+    ├── main.py                  (start the bot, load extensions)
+    ├── utils/
+    │   ├── data.py              (load_data, save_data, get_guild_data)
+    │   └── helpers.py           (is_banned, is_booster, get_streak_mult)
+    └── extensions/
+        ├── economy.py           (/daily, /balance, /leaderboard, /currency)
+        ├── shop.py              (/buy, ShopApprovalView, ShopAcceptModal, /drop)
+        └── admin.py             (/coins, /setprice, /bannedrole, /allowedrole,
+                                   /uncounted, /setlog, /setapproval, /customize)
+
+In main.py:
+    bot.load_extensions_from("./extensions")
+
+─────────────────────────────────────────────────────────────────
+SECTION 5 — FUTURE (do this when the bot gets bigger)
+─────────────────────────────────────────────────────────────────
+
+TASK 22 — Switch from data.json to a real database (SQLite)
+Difficulty : HARD
+Tags       : scale, perf
+Agreed by  : All 4 sources
+
+The JSON approach works fine for now but will become a problem as
+the server grows. SQLite is a lightweight database that's built into
+Python — no server needed, no extra setup beyond installing aiosqlite.
+
+Why it's better than JSON:
+  - Only updates the one row that changed (not the whole file)
+  - Handles concurrent reads/writes safely (eliminates the need for asyncio.Lock in Task 9)
+  - Leaderboard becomes one SQL query instead of sorting everything in Python
+  - Weekly limits (Task 18), daily earnings (Task 6), and pending purchases (Task 20)
+    all become simple database queries instead of nested dicts
+
+This also makes Tasks 6, 7, 18, and 20 much simpler to implement.
+Do this after everything else is working.
+
+Install: pip install aiosqlite
+
+─────────────────────────────────────────────────────────────────
+WHERE TO START — SUGGESTED ORDER
+─────────────────────────────────────────────────────────────────
+
+Session 1 (easy wins, do all of these together):
+  Task 1  — Auto-save with asyncio.Event
+  Task 2  — Reuse aiohttp session
+  Task 3  — Cache exchange rates
+  Task 4  — Message cooldown
+  Task 8  — Fix bare except: pass
+  Task 9  — asyncio.Lock per user
+  Task 10 — Move IDs to .env
+  Task 11 — Fix /balance embed
+  Task 13 — Show booster in /balance
+  Task 19 — Discord countdown for /daily
+
+Session 2 (need more logic but still manageable):
+  Task 5  — Fix streak reset
+  Task 6  — Persist daily_earnings
+  Task 12 — Daily progress bar
+  Task 14 — Fix booster benefits
+  Task 15 — Streak counter audit
+  Task 17 — Edit approval embed on accept/reject
+  Task 18 — $20/week limit
+
+Session 3 (more complex, plan before coding):
+  Task 7  — Pending coins system
+  Task 16 — /drop command
+  Task 20 — Persistent buttons after restart
+  Task 21 — Split into separate files
+
+Later (when you're ready for a bigger rewrite):
+  Task 22 — Migrate to SQLite
+
+─────────────────────────────────────────────────────────────────
+FULL LIST AT A GLANCE
+─────────────────────────────────────────────────────────────────
+
+  #   Task                                   Diff     Tags
+  1   Auto-save with asyncio.Event           EASY     perf
+  2   Reuse aiohttp session                  EASY     perf
+  3   Cache exchange rates                   EASY     perf
+  4   Message cooldown                       EASY     security, perf
+  5   Fix streak reset                       EASY     bugfix
+  6   Persist daily_earnings                 EASY     bugfix, security
+  7   Pending coins on /buy                  MEDIUM   bugfix
+  8   Fix bare except: pass                  EASY     bugfix, security
+  9   asyncio.Lock per user                  EASY     security, bugfix
+  10  Move IDs to .env                       EASY     security, cleanup
+  11  Fix /balance embed          [NEW]      EASY     bugfix
+  12  Daily progress bar          [NEW]      EASY     bugfix, feature
+  13  Show booster in /balance    [NEW]      EASY     bugfix
+  14  Fix booster benefits        [NEW]      MEDIUM   bugfix
+  15  Streak counter audit        [NEW]      EASY     bugfix
+  16  Re-add /drop command        [NEW]      MEDIUM   feature
+  17  Edit approval embed         [NEW]      EASY     feature, bugfix
+  18  $20/week purchase limit     [NEW]      MEDIUM   feature, security
+  19  Discord countdown /daily    [NEW]      EASY     feature
+  20  Persistent buttons restart  [NEW]      HARD     bugfix, feature
+  21  Split into separate files              MEDIUM   cleanup, scale
+  22  Migrate to SQLite                      HARD     scale, perf
+
+  Total : 22 tasks
+  Easy  : 14
+  Medium: 6
+  Hard  : 2
