@@ -1,0 +1,59 @@
+remove the bots from balance command
+
+mods can't add/remove coins command for bots 
+
+add option in the buy command for region for these items only (Google Play, Apple Store, Nintendo Card, Roblox) and email for (paypal) only
+
+the log command don't show /setprice command and /uncounted command and /setapproval command and /drop command and /customize command and /bannedrole command and /allowedrole command
+
+the /Currency command don't support all currencies of the world make sure it works with all currencies and make the bot detect it even if the words not capital or if the user type the country name and if the user type coins turn it back to default bot currency the (coins) one
+
+the /customize command don't have the banner option so make the /customize have the ability to add photo from gallery or upload one or url from the internet for both banner and pfp
+
+the daily progress bar is not related to the /daily command the limit 200 you gain from chatting so /daily not related to it
+
+
+also fix this error too from the drop command :
+
+
+oooo         o8o  oooo                            o8o       光 2.0.0.dev124 [c5439a01]
+  `888         `"'  `888                            `"'       © 2021-present, davfsa - MIT license
+   888 .oo.   oooo   888  oooo   .oooo.   oooo d8b oooo       interpreter:   CPython 3.11.14
+   888P"Y88b  `888   888 .8P'   `P  )88b  `888""8P `888       running on:    x86_64 Linux 6.14.11
+   888   888   888   888888.     .oP"888   888      888       installed at:  /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/hikari
+   888   888   888   888 `88b.  d8(  888   888      888       documentation: https://docs.hikari-py.dev/en/2.0.0.dev124
+  o888o o888o o888o o888o o888o `Y888""8o d888b    o888o      support:       https://discord.gg/Jx4cNGG
+
+Thank you for using lightbulb!
+2026-03-25 02:09:37,165 - WARNING - You are running on optimization level 0 (no optimizations), which may slow down your application. For production, consider using at least level 1 optimization by passing `-O` to the python interpreter call
+2026-03-25 02:09:37,184 - INFO - Extension loaded 'extensions.economy'
+2026-03-25 02:09:37,185 - INFO - Extension loaded 'extensions.admin'
+2026-03-25 02:09:37,191 - INFO - Extension loaded 'extensions.shop'
+2026-03-25 02:09:37,250 - INFO - A newer version of hikari is available, consider upgrading to 2.5.0
+2026-03-25 02:09:37,371 - INFO - you can start 991 sessions before the next window which starts at 2026-03-26 00:10:10.706336+00:00; planning to start 1 session... 
+2026-03-25 02:09:37,497 - INFO - identifying with new session
+2026-03-25 02:09:37,735 - INFO - shard is ready: 1 guilds, Hyper_Coin Beta#0594 (1471282047371972731), session '8c435d867d2930d8140f90d776ee9f53' on v10 gateway
+2026-03-25 02:09:37,740 - INFO - Database initialised.
+2026-03-25 02:09:37,741 - INFO - Hyper Coin Bot started.
+2026-03-25 02:09:38,027 - INFO - Processing guild application commands
+2026-03-25 02:09:38,027 - INFO - Processing global application commands
+2026-03-25 02:09:38,192 - INFO - Application command processing completed
+2026-03-25 02:09:38,193 - INFO - started successfully in approx 1.00 seconds
+2026-03-25 02:10:46,686 - WARNING - Unknown component interaction received for component: 'ab988be4cb4ac7e6df72fcafb408daa1'. Did you forget to start a view?
+You can disable this warning by setting 'ignore_unknown_interactions' to True in the client constructor, or by setting an unhandled component interaction hook.
+
+
+
+
+
+
+
+
+
+
+
+
+
+Also add the  drop command button to the save too so when the bot go offline and comeback again remember the buttons
+
+and remove the /auto drop command it's useless and i don't need it

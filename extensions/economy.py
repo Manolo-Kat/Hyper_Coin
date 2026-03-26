@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import hikari
 import lightbulb
+import miru
 
 from utils.config import COIN_COOLDOWN_SECONDS
 from utils.db import (
@@ -17,15 +18,16 @@ from utils.db import (
     get_weekly_spent, make_week_key, set_user_currency,
     update_daily_claim, get_guild_config,
 )
-from utils.helpers import get_exchange_rate, get_streak_mult, is_booster, is_banned_member
+from utils.helpers import (
+    get_exchange_rate, get_streak_mult, is_booster,
+    is_banned_member, normalize_currency,
+)
 
 logger = logging.getLogger("HyperCoin")
 plugin = lightbulb.Plugin("Economy")
 
 
 # ── Leaderboard view ──────────────────────────────────────────────────────────
-
-import miru
 
 class LeaderboardView(miru.View):
     def __init__(self, pages: list, current: int = 0):
@@ -38,19 +40,23 @@ class LeaderboardView(miru.View):
 
     @miru.button(label="<<<", style=hikari.ButtonStyle.DANGER)
     async def first(self, ctx: miru.ViewContext, _):
-        self.current = 0;                              await self._update(ctx)
+        self.current = 0
+        await self._update(ctx)
 
     @miru.button(label="<", style=hikari.ButtonStyle.PRIMARY)
     async def prev(self, ctx: miru.ViewContext, _):
-        self.current = max(0, self.current - 1);       await self._update(ctx)
+        self.current = max(0, self.current - 1)
+        await self._update(ctx)
 
     @miru.button(label=">", style=hikari.ButtonStyle.PRIMARY)
     async def nxt(self, ctx: miru.ViewContext, _):
-        self.current = min(len(self.pages)-1, self.current+1); await self._update(ctx)
+        self.current = min(len(self.pages) - 1, self.current + 1)
+        await self._update(ctx)
 
     @miru.button(label=">>>", style=hikari.ButtonStyle.DANGER)
     async def last(self, ctx: miru.ViewContext, _):
-        self.current = len(self.pages) - 1;            await self._update(ctx)
+        self.current = len(self.pages) - 1
+        await self._update(ctx)
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -62,8 +68,7 @@ async def daily_cmd(ctx: lightbulb.SlashContext):
     bot = ctx.bot
     db  = bot.d.db
     cfg = await get_guild_config(db, ctx.guild_id)
-    banned_role = cfg["banned_role"]
-    if is_banned_member(banned_role, ctx.member):
+    if is_banned_member(cfg["banned_role"], ctx.member):
         await ctx.respond("You are banned from using this bot.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
@@ -84,26 +89,26 @@ async def daily_cmd(ctx: lightbulb.SlashContext):
             )
             return
         if hours > 48:
-            streak = 0  # Missed a day — reset streak
+            streak = 0
 
-    boosting = is_booster(ctx.member)
-    amt      = random.randint(1, 20) * (2 if boosting else 1)
+    boosting   = is_booster(ctx.member)
+    amt        = random.randint(1, 20) * (2 if boosting else 1)
     new_streak = min(streak + 1, 7)
 
     await update_daily_claim(db, ctx.guild_id, ctx.user.id, now.isoformat(), new_streak)
     async with bot.d.user_locks[ctx.user.id]:
         await add_earned_coins(db, ctx.guild_id, ctx.user.id, amt, boosting, new_streak)
 
-    mult       = get_streak_mult(new_streak)
-    next_ts    = int((now + timedelta(hours=24)).timestamp())
+    mult    = get_streak_mult(new_streak)
+    next_ts = int((now + timedelta(hours=24)).timestamp())
 
     emb = hikari.Embed(title="🎁 Daily Reward!", color=0xFFD700)
     emb.set_thumbnail(ctx.user.avatar_url or ctx.user.default_avatar_url)
     emb.description = f"You received **{amt:,} coins**!"
-    emb.add_field("🔥 Streak",      f"{new_streak} day{'s' if new_streak != 1 else ''}",  inline=True)
-    emb.add_field("✨ Multiplier",  f"×{mult}",                                             inline=True)
-    emb.add_field("⚡ Booster",     "Yes — 2× daily!" if boosting else "No",                inline=True)
-    emb.add_field("⏰ Next Claim",  f"<t:{next_ts}:R>",                                     inline=False)
+    emb.add_field("🔥 Streak",     f"{new_streak} day{'s' if new_streak != 1 else ''}",  inline=True)
+    emb.add_field("✨ Multiplier", f"×{mult}",                                             inline=True)
+    emb.add_field("⚡ Booster",    "Yes — 2× daily!" if boosting else "No",                inline=True)
+    emb.add_field("⏰ Next Claim", f"<t:{next_ts}:R>",                                     inline=False)
     emb.timestamp = now
     await ctx.respond(embed=emb)
 
@@ -117,14 +122,19 @@ async def balance_cmd(ctx: lightbulb.SlashContext):
     db     = bot.d.db
     target = ctx.options.user or ctx.user
 
-    bal    = await get_balance(db, ctx.guild_id, target.id)
-    cfg    = await get_guild_config(db, ctx.guild_id)
-    ppu    = cfg["price_per_usd"] or 100
-    usd    = bal / ppu
-    pref   = await get_user_currency(db, ctx.guild_id, target.id)
+    # Block bots
+    if target.is_bot:
+        await ctx.respond("❌ Bots don't have coin balances.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+
+    bal  = await get_balance(db, ctx.guild_id, target.id)
+    cfg  = await get_guild_config(db, ctx.guild_id)
+    ppu  = cfg["price_per_usd"] or 100
+    usd  = bal / ppu
+    pref = await get_user_currency(db, ctx.guild_id, target.id)
 
     val_str = f"${usd:.2f} USD"
-    if pref != "USD":
+    if pref not in ("USD", "COINS"):
         rate = await get_exchange_rate(bot, pref)
         if rate:
             val_str = f"{usd * rate:.2f} {pref}"
@@ -135,18 +145,18 @@ async def balance_cmd(ctx: lightbulb.SlashContext):
     except Exception:
         boosting = False
 
-    daily_limit   = 400 if boosting else 200
-    earned_today  = await get_daily_earned_today(db, ctx.guild_id, target.id)
-    filled        = int((earned_today / daily_limit) * 10)
-    bar           = "█" * filled + "░" * (10 - filled)
+    daily_limit  = 400 if boosting else 200
+    earned_today = await get_daily_earned_today(db, ctx.guild_id, target.id)
+    filled       = int((earned_today / daily_limit) * 10)
+    bar          = "█" * filled + "░" * (10 - filled)
 
-    info          = await get_daily_info(db, ctx.guild_id, target.id)
-    streak        = info["streak"] if info else 0
-    mult          = get_streak_mult(streak)
+    info      = await get_daily_info(db, ctx.guild_id, target.id)
+    streak    = info["streak"] if info else 0
+    mult      = get_streak_mult(streak)
 
-    now           = datetime.now(timezone.utc)
-    wk            = make_week_key(target.id, now)
-    week_spent    = await get_weekly_spent(db, ctx.guild_id, target.id, wk)
+    now        = datetime.now(timezone.utc)
+    wk         = make_week_key(target.id, now)
+    week_spent = await get_weekly_spent(db, ctx.guild_id, target.id, wk)
 
     emb = hikari.Embed(title="💰 Balance", color=0xFFD700)
     emb.set_author(name=target.username)
@@ -159,8 +169,9 @@ async def balance_cmd(ctx: lightbulb.SlashContext):
                   "Active — 2× coins & 400/day" if boosting else "Not boosting",   inline=True)
     emb.add_field("📅 Weekly Spend", f"${week_spent}/$20",                         inline=True)
     emb.add_field(
-        f"📊 Daily Progress  ({earned_today}/{daily_limit})",
-        f"`{bar}`", inline=False
+        f"💬 Chat Coins Today  ({earned_today}/{daily_limit})",
+        f"`{bar}` *(from chatting only, not /daily)*",
+        inline=False
     )
     emb.timestamp = now
     await ctx.respond(embed=emb)
@@ -170,8 +181,8 @@ async def balance_cmd(ctx: lightbulb.SlashContext):
 @lightbulb.command("leaderboard", "See the top coin earners")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def leaderboard_cmd(ctx: lightbulb.SlashContext):
-    bot   = ctx.bot
-    rows  = await get_leaderboard(bot.d.db, ctx.guild_id)
+    bot  = ctx.bot
+    rows = await get_leaderboard(bot.d.db, ctx.guild_id)
     if not rows:
         await ctx.respond("No data yet.", flags=hikari.MessageFlag.EPHEMERAL)
         return
@@ -193,17 +204,46 @@ async def leaderboard_cmd(ctx: lightbulb.SlashContext):
 
 
 @plugin.command
-@lightbulb.option("currency", "Currency code (e.g. EUR, GBP, EGP)", required=True)
+@lightbulb.option("currency",
+    "Currency code, country name, or 'coins' to reset (e.g. USD, Egypt, euro, coins)",
+    required=True)
 @lightbulb.command("currency", "Set your preferred display currency")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def currency_cmd(ctx: lightbulb.SlashContext):
-    curr = ctx.options.currency.upper()
-    rate = await get_exchange_rate(ctx.bot, curr)
-    if not rate:
-        await ctx.respond(f"❌ Invalid or unsupported currency: **{curr}**", flags=hikari.MessageFlag.EPHEMERAL)
+    bot = ctx.bot
+    db  = bot.d.db
+    raw = ctx.options.currency.strip()
+
+    code = normalize_currency(raw)
+    if code is None:
+        await ctx.respond(
+            f"❌ Could not recognise **{raw}**. Try a currency code (`EUR`, `EGP`), "
+            "a country name (`Egypt`, `France`), or `coins` to reset.",
+            flags=hikari.MessageFlag.EPHEMERAL
+        )
         return
-    await set_user_currency(ctx.bot.d.db, ctx.guild_id, ctx.user.id, curr)
-    await ctx.respond(f"✅ Display currency set to **{curr}**.", flags=hikari.MessageFlag.EPHEMERAL)
+
+    if code == 'COINS':
+        await set_user_currency(db, ctx.guild_id, ctx.user.id, 'USD')
+        await ctx.respond(
+            "✅ Display currency reset to **coins** (default).",
+            flags=hikari.MessageFlag.EPHEMERAL
+        )
+        return
+
+    rate = await get_exchange_rate(bot, code)
+    if rate is None:
+        await ctx.respond(
+            f"❌ Currency **{code}** is not supported by our exchange rate provider.",
+            flags=hikari.MessageFlag.EPHEMERAL
+        )
+        return
+
+    await set_user_currency(db, ctx.guild_id, ctx.user.id, code)
+    await ctx.respond(
+        f"✅ Display currency set to **{code}** (1 USD ≈ {rate:.4f} {code}).",
+        flags=hikari.MessageFlag.EPHEMERAL
+    )
 
 
 @plugin.command
@@ -233,8 +273,7 @@ async def help_cmd(ctx: lightbulb.SlashContext):
             "• `/setlog` — Set admin log channel\n"
             "• `/setprice` — Set gift prices\n"
             "• `/drop` — Drop coins in channel\n"
-            "• `/setdrop` — Set auto-drop channel\n"
-            "• `/customize` — Change bot avatar (Owner only)"
+            "• `/customize` — Change bot avatar/banner (Owner only)"
         )
     emb.set_footer(text="💡 Earn coins by chatting (1 coin per 25 s) and daily rewards.")
     await ctx.respond(embed=emb, flags=hikari.MessageFlag.EPHEMERAL)
@@ -250,18 +289,15 @@ async def on_message(event: hikari.GuildMessageCreateEvent):
     now     = datetime.now(timezone.utc)
     content = event.content or ""
 
-    # Anti-spam (runs for every message regardless of channel)
     if event.app.d.spam.detect(event.author_id, content, now):
         return
 
-    # 25-second per-user coin cooldown
     cooldowns = event.app.d.coin_cooldowns
     last      = cooldowns.get(event.author_id)
     if last and (now - last).total_seconds() < COIN_COOLDOWN_SECONDS:
         return
     cooldowns[event.author_id] = now
 
-    # Guild rules
     db  = event.app.d.db
     cfg = await get_guild_config(db, event.guild_id)
 

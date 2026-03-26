@@ -9,7 +9,6 @@ load_dotenv(override=True)  # .env values always take precedence
 
 import asyncio
 import logging
-import random
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -18,7 +17,11 @@ import hikari
 import lightbulb
 import miru
 
-from utils.db import init_db, migrate_from_json, get_guild_config, get_all_pending_purchases
+from utils.db import (
+    init_db, migrate_from_json,
+    get_all_pending_purchases,
+    get_all_pending_drops, remove_pending_drop,
+)
 from utils.helpers import SpamTracker
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -41,7 +44,7 @@ bot = lightbulb.BotApp(
     default_enabled_guilds=(),
 )
 
-miru_client = miru.Client(bot)
+miru_client = miru.Client(bot, ignore_unknown_interactions=True)
 
 # Shared state — safe defaults so extensions never see AttributeError at import
 bot.d.db             = None
@@ -57,41 +60,6 @@ bot.d.spam           = SpamTracker()
 
 bot.load_extensions_from("./extensions")
 
-# ── Auto-drop loop ────────────────────────────────────────────────────────────
-
-async def auto_drop_loop():
-    """Fires every 30–90 minutes, drops random coins into the drop channel."""
-    from extensions.shop import DropView
-    await asyncio.sleep(15)  # allow bot to fully boot
-
-    while True:
-        delay = random.randint(1800, 5400)  # 30–90 min
-        await asyncio.sleep(delay)
-        try:
-            guilds = bot.cache.get_available_guilds_view()
-            for gid in guilds:
-                try:
-                    cfg = await get_guild_config(bot.d.db, gid)
-                    if not cfg["drop_channel"]:
-                        continue
-                    coins   = random.randint(50, 500)
-                    drop_id = f"{gid}_{datetime.now(timezone.utc).timestamp()}"
-                    view    = DropView(gid, coins, drop_id)
-                    emb     = hikari.Embed(
-                        title="💸 Auto Coin Drop!",
-                        description=f"**{coins:,} coins** just dropped! Claim it fast!",
-                        color=0xFFD700,
-                    )
-                    msg = await bot.rest.create_message(
-                        cfg["drop_channel"], embed=emb, components=view
-                    )
-                    miru_client.start_view(view, bind_to=msg)
-                except Exception as e:
-                    logger.warning(f"Auto-drop failed (guild {gid}): {e}")
-        except Exception as e:
-            logger.warning(f"Auto-drop loop error: {e}")
-
-
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 @bot.listen(hikari.StartedEvent)
@@ -100,10 +68,9 @@ async def on_start(_: hikari.StartedEvent):
     bot.d.db   = await init_db()
     await migrate_from_json(bot.d.db)
 
-    # Re-attach persistent approval views
+    # ── Re-attach purchase approval views ──────────────────────────────────
     from extensions.shop import ShopApprovalView
-    pending = await get_all_pending_purchases(bot.d.db)
-    for p in pending:
+    for p in await get_all_pending_purchases(bot.d.db):
         try:
             msg  = await bot.rest.fetch_message(p["channel_id"], p["message_id"])
             view = ShopApprovalView(
@@ -117,14 +84,50 @@ async def on_start(_: hikari.StartedEvent):
             )
             miru_client.start_view(view, bind_to=msg)
         except Exception as e:
-            logger.warning(f"Re-attach view failed (msg {p['message_id']}): {e}")
+            logger.warning(f"Re-attach purchase view failed (msg {p['message_id']}): {e}")
+
+    # ── Re-attach active drop views ────────────────────────────────────────
+    from extensions.shop import DropView
+    now = datetime.now(timezone.utc)
+    for d in await get_all_pending_drops(bot.d.db):
+        try:
+            created   = datetime.fromisoformat(d["created_at"])
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            age       = (now - created).total_seconds()
+            remaining = 120.0 - age
+
+            if remaining <= 5:
+                # Drop expired while bot was offline — mark it as expired
+                try:
+                    msg = await bot.rest.fetch_message(d["channel_id"], d["message_id"])
+                    emb = hikari.Embed(
+                        title="💨 Drop Expired",
+                        description="Bot restarted — the drop has expired.",
+                        color=0x888888
+                    )
+                    await bot.rest.edit_message(d["channel_id"], d["message_id"],
+                                                embed=emb, components=[])
+                except Exception:
+                    pass
+                await remove_pending_drop(bot.d.db, d["message_id"])
+            else:
+                msg  = await bot.rest.fetch_message(d["channel_id"], d["message_id"])
+                view = DropView(bot, d["guild_id"], d["coins"], timeout=remaining)
+                view.msg_id  = d["message_id"]
+                view.chan_id = d["channel_id"]
+                miru_client.start_view(view, bind_to=msg)
+        except Exception as e:
+            logger.warning(f"Re-attach drop view failed (msg {d['message_id']}): {e}")
+            try:
+                await remove_pending_drop(bot.d.db, d["message_id"])
+            except Exception:
+                pass
 
     await bot.update_presence(
         status=hikari.Status.DO_NOT_DISTURB,
         activity=hikari.Activity(name="Zo's wallet", type=hikari.ActivityType.WATCHING),
     )
-
-    asyncio.create_task(auto_drop_loop())
     logger.info("Hyper Coin Bot started.")
 
 

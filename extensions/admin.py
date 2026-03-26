@@ -8,9 +8,9 @@ import logging
 import hikari
 import lightbulb
 
-from utils.config import OWNER_ID, MOD_ROLE_ID, DEFAULT_SHOP_PRICES
+from utils.config import OWNER_ID, MOD_ROLE_ID
 from utils.db import (
-    adjust_coins, get_balance, get_guild_config,
+    adjust_coins, get_guild_config,
     set_guild_config_field,
 )
 from utils.helpers import is_banned_member
@@ -29,11 +29,19 @@ def _is_staff(ctx: lightbulb.SlashContext) -> bool:
     return MOD_ROLE_ID in ctx.member.role_ids or ctx.user.id == OWNER_ID
 
 
+async def _log(bot, log_channel_id, message: str) -> None:
+    if log_channel_id:
+        try:
+            await bot.rest.create_message(log_channel_id, message)
+        except Exception:
+            pass
+
+
 # ── Coins ─────────────────────────────────────────────────────────────────────
 
 @plugin.command
-@lightbulb.option("amount", "Positive = add, negative = remove", type=int, required=True)
-@lightbulb.option("user",   "Target user",                       type=hikari.User, required=True)
+@lightbulb.option("amount", "Positive = add, negative = remove", type=int,          required=True)
+@lightbulb.option("user",   "Target user",                       type=hikari.User,  required=True)
 @lightbulb.command("coins", "Staff: add or remove coins from a user")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def coins_cmd(ctx: lightbulb.SlashContext):
@@ -42,8 +50,14 @@ async def coins_cmd(ctx: lightbulb.SlashContext):
         return
 
     target = ctx.options.user
-    amt    = ctx.options.amount
-    db     = ctx.bot.d.db
+
+    # Block bots
+    if target.is_bot:
+        await ctx.respond("❌ Cannot modify coins for bots.", flags=hikari.MessageFlag.EPHEMERAL)
+        return
+
+    amt = ctx.options.amount
+    db  = ctx.bot.d.db
 
     async with ctx.bot.d.user_locks[target.id]:
         new = await adjust_coins(db, ctx.guild_id, target.id, amt)
@@ -56,15 +70,9 @@ async def coins_cmd(ctx: lightbulb.SlashContext):
     )
 
     cfg = await get_guild_config(db, ctx.guild_id)
-    if cfg["log_channel"]:
-        try:
-            await ctx.bot.rest.create_message(
-                cfg["log_channel"],
-                f"🛡️ <@{ctx.user.id}> {verb} **{abs(amt):,} coins** for <@{target.id}>. "
-                f"Balance: **{new:,}**."
-            )
-        except Exception:
-            pass
+    await _log(ctx.bot, cfg["log_channel"],
+               f"🛡️ <@{ctx.user.id}> {verb} **{abs(amt):,} coins** for <@{target.id}>. "
+               f"Balance: **{new:,}**.")
 
 
 # ── Channel management ────────────────────────────────────────────────────────
@@ -92,19 +100,25 @@ async def uncounted_cmd(ctx: lightbulb.SlashContext):
 
     await set_guild_config_field(db, ctx.guild_id, "uncounted_channels", json.dumps(current))
     await ctx.respond(msg)
+    await _log(ctx.bot, cfg["log_channel"],
+               f"🔇 <@{ctx.user.id}> toggled uncounted channel {ch.mention}: **{msg.lstrip('✅ ')}**")
 
 
 @plugin.command
 @lightbulb.option("role", "The banned role", type=hikari.Role, required=True)
-@lightbulb.command("bannedrole", "Staff: set which role cannot earn coins")
+@lightbulb.command("bannedrole", "Staff: set which role cannot use the bot")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def bannedrole_cmd(ctx: lightbulb.SlashContext):
     if not _is_staff(ctx):
         await ctx.respond("❌ Staff only.", flags=hikari.MessageFlag.EPHEMERAL)
         return
     role = ctx.options.role
-    await set_guild_config_field(ctx.bot.d.db, ctx.guild_id, "banned_role", role.id)
+    db   = ctx.bot.d.db
+    await set_guild_config_field(db, ctx.guild_id, "banned_role", role.id)
     await ctx.respond(f"✅ Banned role set to **{role.name}**.")
+    cfg = await get_guild_config(db, ctx.guild_id)
+    await _log(ctx.bot, cfg["log_channel"],
+               f"🚫 <@{ctx.user.id}> set banned role to **{role.name}**.")
 
 
 @plugin.command
@@ -130,9 +144,11 @@ async def allowedrole_cmd(ctx: lightbulb.SlashContext):
 
     await set_guild_config_field(db, ctx.guild_id, "allowed_roles", json.dumps(current))
     await ctx.respond(msg)
+    await _log(ctx.bot, cfg["log_channel"],
+               f"👥 <@{ctx.user.id}> toggled allowed role **{role.name}**: {msg.lstrip('✅ ')}")
 
 
-# ── Channel config ─────────────────────────────────────────────────────────────
+# ── Channel config ────────────────────────────────────────────────────────────
 
 @plugin.command
 @lightbulb.option("channel", "Approval channel", type=hikari.TextableGuildChannel, required=True)
@@ -142,9 +158,13 @@ async def setapproval_cmd(ctx: lightbulb.SlashContext):
     if not _is_staff(ctx):
         await ctx.respond("❌ Staff only.", flags=hikari.MessageFlag.EPHEMERAL)
         return
-    ch = ctx.options.channel
-    await set_guild_config_field(ctx.bot.d.db, ctx.guild_id, "approval_channel", ch.id)
+    ch  = ctx.options.channel
+    db  = ctx.bot.d.db
+    await set_guild_config_field(db, ctx.guild_id, "approval_channel", ch.id)
     await ctx.respond(f"✅ Approval channel set to {ch.mention}.")
+    cfg = await get_guild_config(db, ctx.guild_id)
+    await _log(ctx.bot, cfg["log_channel"],
+               f"📋 <@{ctx.user.id}> set approval channel to {ch.mention}.")
 
 
 @plugin.command
@@ -160,11 +180,11 @@ async def setlog_cmd(ctx: lightbulb.SlashContext):
     await ctx.respond(f"✅ Log channel set to {ch.mention}.")
 
 
-# ── Shop pricing ───────────────────────────────────────────────────────────────
+# ── Shop pricing ──────────────────────────────────────────────────────────────
 
 @plugin.command
-@lightbulb.option("price",    "Coins per $1",               type=int,            required=True)
-@lightbulb.option("item",     "Item to set price for",      choices=SHOP_ITEMS,  required=False)
+@lightbulb.option("price", "Coins per $1",              type=int,           required=True)
+@lightbulb.option("item",  "Item to set price for",     choices=SHOP_ITEMS, required=False)
 @lightbulb.command("setprice", "Staff: set item price (coins per $1)")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def setprice_cmd(ctx: lightbulb.SlashContext):
@@ -186,33 +206,91 @@ async def setprice_cmd(ctx: lightbulb.SlashContext):
         prices = json.loads(cfg["shop_prices"] or "{}")
         prices[item] = price
         await set_guild_config_field(db, ctx.guild_id, "shop_prices", json.dumps(prices))
-        await ctx.respond(f"✅ **{item}** now costs **{price} coins per $1**.")
+        reply = f"✅ **{item}** now costs **{price} coins per $1**."
+        log_msg = f"💲 <@{ctx.user.id}> set **{item}** price to **{price} coins/$1**."
     else:
         await set_guild_config_field(db, ctx.guild_id, "price_per_usd", price)
-        await ctx.respond(f"✅ Default price set to **{price} coins per $1**.")
+        reply = f"✅ Default price set to **{price} coins per $1**."
+        log_msg = f"💲 <@{ctx.user.id}> set default price to **{price} coins/$1**."
+
+    await ctx.respond(reply)
+    await _log(ctx.bot, cfg["log_channel"], log_msg)
 
 
 # ── Bot customisation ─────────────────────────────────────────────────────────
 
 @plugin.command
-@lightbulb.option("avatar_url", "Direct image URL for bot avatar", required=True)
-@lightbulb.command("customize", "Owner: change the bot avatar")
+@lightbulb.option("banner_file", "Upload a banner image file",      type=hikari.Attachment, required=False)
+@lightbulb.option("banner_url",  "URL for the bot banner",          required=False)
+@lightbulb.option("pfp_file",    "Upload a profile picture file",   type=hikari.Attachment, required=False)
+@lightbulb.option("pfp_url",     "URL for the bot profile picture", required=False)
+@lightbulb.command("customize", "Owner: change the bot avatar and/or banner")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def customize_cmd(ctx: lightbulb.SlashContext):
     if ctx.user.id != OWNER_ID:
         await ctx.respond("❌ Owner only.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
-    url = ctx.options.avatar_url
+    bot        = ctx.bot
+    avatar_data = None
+    banner_data = None
+    changes     = []
+
+    async def _fetch(url: str) -> bytes | None:
+        try:
+            async with bot.d.http.get(url) as r:
+                if r.status != 200:
+                    raise ValueError(f"HTTP {r.status}")
+                return await r.read()
+        except Exception as e:
+            await ctx.respond(f"❌ Failed to fetch image: {e}", flags=hikari.MessageFlag.EPHEMERAL)
+            return None
+
+    # Avatar
+    if ctx.options.pfp_file:
+        avatar_data = await _fetch(ctx.options.pfp_file.url)
+        if avatar_data is None:
+            return
+        changes.append("avatar")
+    elif ctx.options.pfp_url:
+        avatar_data = await _fetch(ctx.options.pfp_url)
+        if avatar_data is None:
+            return
+        changes.append("avatar")
+
+    # Banner
+    if ctx.options.banner_file:
+        banner_data = await _fetch(ctx.options.banner_file.url)
+        if banner_data is None:
+            return
+        changes.append("banner")
+    elif ctx.options.banner_url:
+        banner_data = await _fetch(ctx.options.banner_url)
+        if banner_data is None:
+            return
+        changes.append("banner")
+
+    if not changes:
+        await ctx.respond(
+            "❌ Please provide at least one of: `pfp_url`, `pfp_file`, `banner_url`, `banner_file`.",
+            flags=hikari.MessageFlag.EPHEMERAL
+        )
+        return
+
     try:
-        async with ctx.bot.d.http.get(url) as r:
-            if r.status != 200:
-                raise ValueError(f"HTTP {r.status}")
-            data = await r.read()
-        await ctx.bot.rest.edit_my_user(avatar=data)
-        await ctx.respond("✅ Bot avatar updated!")
+        kwargs = {}
+        if avatar_data:
+            kwargs["avatar"] = avatar_data
+        if banner_data:
+            kwargs["banner"] = banner_data
+        await bot.rest.edit_my_user(**kwargs)
+        changed = " and ".join(changes)
+        await ctx.respond(f"✅ Bot **{changed}** updated!")
+        cfg = await get_guild_config(bot.d.db, ctx.guild_id)
+        await _log(bot, cfg["log_channel"],
+                   f"🎨 <@{ctx.user.id}> updated the bot's **{changed}**.")
     except Exception as e:
-        await ctx.respond(f"❌ Failed: {e}", flags=hikari.MessageFlag.EPHEMERAL)
+        await ctx.respond(f"❌ Failed to update: {e}", flags=hikari.MessageFlag.EPHEMERAL)
 
 
 # ── Ping ──────────────────────────────────────────────────────────────────────

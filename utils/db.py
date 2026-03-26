@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS pending_purchases (
     created_at TEXT    NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS pending_drops (
+    message_id INTEGER PRIMARY KEY,
+    guild_id   INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    coins      INTEGER NOT NULL,
+    created_at TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS guild_config (
     guild_id           INTEGER PRIMARY KEY,
     approval_channel   INTEGER,
@@ -246,7 +254,6 @@ async def set_coins(db, guild_id: int, user_id: int, coins: int) -> None:
 
 
 async def adjust_coins(db, guild_id: int, user_id: int, delta: int) -> int:
-    """Add or subtract coins. Returns new balance (floored at 0)."""
     bal = await get_balance(db, guild_id, user_id)
     new = max(0, bal + delta)
     await set_coins(db, guild_id, user_id, new)
@@ -257,10 +264,6 @@ async def add_earned_coins(
     db, guild_id: int, user_id: int,
     base: int, is_boosting: bool, streak: int
 ) -> int:
-    """
-    Awards coins from chat/daily with streak+booster multipliers
-    and enforces the daily cap. Returns the amount actually added.
-    """
     from utils.helpers import get_streak_mult
     daily_limit = 400 if is_boosting else 200
     today = datetime.now(timezone.utc).date().isoformat()
@@ -379,9 +382,31 @@ async def remove_pending_purchase(db, message_id: int) -> None:
 
 
 async def get_all_pending_purchases(db) -> list:
-    async with db.execute(
-        "SELECT * FROM pending_purchases"
-    ) as c:
+    async with db.execute("SELECT * FROM pending_purchases") as c:
+        return await c.fetchall()
+
+
+# ── Pending drops ─────────────────────────────────────────────────────────────
+
+async def save_pending_drop(
+    db, message_id: int, guild_id: int, channel_id: int, coins: int
+) -> None:
+    await db.execute(
+        "INSERT OR REPLACE INTO pending_drops "
+        "(message_id, guild_id, channel_id, coins, created_at) VALUES (?,?,?,?,?)",
+        (message_id, guild_id, channel_id, coins,
+         datetime.now(timezone.utc).isoformat())
+    )
+    await db.commit()
+
+
+async def remove_pending_drop(db, message_id: int) -> None:
+    await db.execute("DELETE FROM pending_drops WHERE message_id=?", (message_id,))
+    await db.commit()
+
+
+async def get_all_pending_drops(db) -> list:
+    async with db.execute("SELECT * FROM pending_drops") as c:
         return await c.fetchall()
 
 
