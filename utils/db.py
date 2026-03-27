@@ -14,10 +14,6 @@ logger = logging.getLogger("HyperCoin")
 
 DB_PATH = "hyper_coin.db"
 
-# ── Guild config in-memory cache (60-second TTL) ──────────────────────────────
-_guild_config_cache: dict[int, tuple] = {}
-_CACHE_TTL = 60
-
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -93,12 +89,6 @@ CREATE TABLE IF NOT EXISTS guild_config (
     allowed_roles      TEXT    NOT NULL DEFAULT '[]',
     uncounted_channels TEXT    NOT NULL DEFAULT '[]'
 );
-
-CREATE INDEX IF NOT EXISTS idx_users_guild       ON users (guild_id);
-CREATE INDEX IF NOT EXISTS idx_users_guild_coins ON users (guild_id, coins DESC);
-CREATE INDEX IF NOT EXISTS idx_daily_earn_user   ON daily_earnings (guild_id, user_id);
-CREATE INDEX IF NOT EXISTS idx_weekly_user       ON weekly_spending (guild_id, user_id);
-CREATE INDEX IF NOT EXISTS idx_daily_claims_user ON daily_claims (guild_id, user_id);
 """
 
 
@@ -111,17 +101,6 @@ async def init_db() -> aiosqlite.Connection:
     await db.commit()
     logger.info("Database initialised.")
     return db
-
-
-async def run_db_maintenance(db: aiosqlite.Connection) -> None:
-    """Hourly WAL checkpoint and query-planner optimisation."""
-    try:
-        await db.execute("PRAGMA wal_checkpoint(PASSIVE)")
-        await db.execute("PRAGMA optimize")
-        await db.commit()
-        logger.debug("DB maintenance complete.")
-    except Exception as e:
-        logger.warning(f"DB maintenance failed: {e}")
 
 
 async def migrate_from_json(db: aiosqlite.Connection) -> None:
@@ -138,9 +117,9 @@ async def migrate_from_json(db: aiosqlite.Connection) -> None:
             gid = int(gid_str)
             cfg = gd.get("config", {})
 
-            prices = cfg.get("shop_prices", DEFAULT_SHOP_PRICES)
-            roles  = gd.get("allowed_roles", [])
-            unc    = list(gd.get("uncounted", []))
+            prices   = cfg.get("shop_prices", DEFAULT_SHOP_PRICES)
+            roles    = gd.get("allowed_roles", [])
+            unc      = list(gd.get("uncounted", []))
 
             await db.execute(
                 """
@@ -229,13 +208,6 @@ async def migrate_from_json(db: aiosqlite.Connection) -> None:
 # ── Guild config ──────────────────────────────────────────────────────────────
 
 async def get_guild_config(db: aiosqlite.Connection, guild_id: int) -> aiosqlite.Row:
-    now_ts = datetime.now(timezone.utc).timestamp()
-    cached = _guild_config_cache.get(guild_id)
-    if cached is not None:
-        row, ts = cached
-        if now_ts - ts < _CACHE_TTL:
-            return row
-
     async with db.execute(
         "SELECT * FROM guild_config WHERE guild_id = ?", (guild_id,)
     ) as c:
@@ -250,8 +222,6 @@ async def get_guild_config(db: aiosqlite.Connection, guild_id: int) -> aiosqlite
             "SELECT * FROM guild_config WHERE guild_id = ?", (guild_id,)
         ) as c:
             row = await c.fetchone()
-
-    _guild_config_cache[guild_id] = (row, now_ts)
     return row
 
 
@@ -262,8 +232,6 @@ async def set_guild_config_field(db, guild_id: int, field: str, value) -> None:
         (guild_id, value)
     )
     await db.commit()
-    # Invalidate cache so next read gets fresh data
-    _guild_config_cache.pop(guild_id, None)
 
 
 # ── Users / coins ─────────────────────────────────────────────────────────────
@@ -286,18 +254,10 @@ async def set_coins(db, guild_id: int, user_id: int, coins: int) -> None:
 
 
 async def adjust_coins(db, guild_id: int, user_id: int, delta: int) -> int:
-    """Atomically add delta to a user's coins, floored at 0. Returns new balance."""
-    await db.execute(
-        "INSERT INTO users (guild_id, user_id, coins) VALUES (?, ?, MAX(0, ?)) "
-        "ON CONFLICT(guild_id, user_id) DO UPDATE SET coins = MAX(0, coins + ?)",
-        (guild_id, user_id, delta, delta)
-    )
-    await db.commit()
-    async with db.execute(
-        "SELECT coins FROM users WHERE guild_id=? AND user_id=?", (guild_id, user_id)
-    ) as c:
-        row = await c.fetchone()
-    return row["coins"] if row else 0
+    bal = await get_balance(db, guild_id, user_id)
+    new = max(0, bal + delta)
+    await set_coins(db, guild_id, user_id, new)
+    return new
 
 
 async def add_earned_coins(
@@ -337,7 +297,6 @@ async def add_earned_coins(
             "ON CONFLICT(guild_id, user_id, earn_date) DO UPDATE SET earned = earned + excluded.earned",
             (guild_id, user_id, today, actual)
         )
-    # Single commit after all inserts
     await db.commit()
     return actual
 
@@ -354,7 +313,7 @@ async def get_daily_earned_today(db, guild_id: int, user_id: int) -> int:
 
 async def get_leaderboard(db, guild_id: int) -> list:
     async with db.execute(
-        "SELECT user_id, coins FROM users WHERE guild_id=? ORDER BY coins DESC LIMIT 100",
+        "SELECT user_id, coins FROM users WHERE guild_id=? ORDER BY coins DESC",
         (guild_id,)
     ) as c:
         return await c.fetchall()
@@ -381,10 +340,9 @@ async def update_daily_claim(db, guild_id: int, user_id: int, now_iso: str, stre
 
 # ── Weekly spending ───────────────────────────────────────────────────────────
 
-def make_week_key(now: datetime) -> str:
-    """Returns a week key string (year + ISO week number). User ID is stored separately."""
+def make_week_key(user_id: int, now: datetime) -> str:
     iso = now.isocalendar()
-    return f"{iso.year}_W{iso.week:02d}"
+    return f"{user_id}_{iso.year}_{iso.week}"
 
 
 async def get_weekly_spent(db, guild_id: int, user_id: int, week_key: str) -> int:
