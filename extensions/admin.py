@@ -4,6 +4,7 @@ Admin extension — staff commands for configuration and coin management
 
 import json
 import logging
+from datetime import datetime, timezone
 
 import hikari
 import lightbulb
@@ -29,10 +30,10 @@ def _is_staff(ctx: lightbulb.SlashContext) -> bool:
     return MOD_ROLE_ID in ctx.member.role_ids or ctx.user.id == OWNER_ID
 
 
-async def _log(bot, log_channel_id, message: str) -> None:
-    if log_channel_id:
+async def _log(bot, channel_id, embed: hikari.Embed) -> None:
+    if channel_id:
         try:
-            await bot.rest.create_message(log_channel_id, message)
+            await bot.rest.create_message(channel_id, embed=embed)
         except Exception:
             pass
 
@@ -40,8 +41,8 @@ async def _log(bot, log_channel_id, message: str) -> None:
 # ── Coins ─────────────────────────────────────────────────────────────────────
 
 @plugin.command
-@lightbulb.option("amount", "Positive = add, negative = remove", type=int,          required=True)
-@lightbulb.option("user",   "Target user",                       type=hikari.User,  required=True)
+@lightbulb.option("amount", "Positive = add, negative = remove", type=int,         required=True)
+@lightbulb.option("user",   "Target user",                       type=hikari.User, required=True)
 @lightbulb.command("coins", "Staff: add or remove coins from a user")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def coins_cmd(ctx: lightbulb.SlashContext):
@@ -50,8 +51,6 @@ async def coins_cmd(ctx: lightbulb.SlashContext):
         return
 
     target = ctx.options.user
-
-    # Block bots
     if target.is_bot:
         await ctx.respond("❌ Cannot modify coins for bots.", flags=hikari.MessageFlag.EPHEMERAL)
         return
@@ -69,10 +68,15 @@ async def coins_cmd(ctx: lightbulb.SlashContext):
         f"New balance: **{new:,} coins**."
     )
 
-    cfg = await get_guild_config(db, ctx.guild_id)
-    await _log(ctx.bot, cfg["log_channel"],
-               f"🛡️ <@{ctx.user.id}> {verb} **{abs(amt):,} coins** for <@{target.id}>. "
-               f"Balance: **{new:,}**.")
+    cfg   = await get_guild_config(db, ctx.guild_id)
+    color = 0x00FF88 if amt >= 0 else 0xFF3333
+    title = "💰 Coins Added" if amt >= 0 else "💰 Coins Removed"
+    emb   = hikari.Embed(title=title, color=color, timestamp=datetime.now(timezone.utc))
+    emb.add_field("🛡️ Staff",      f"<@{ctx.user.id}>",   inline=True)
+    emb.add_field("👤 User",       f"<@{target.id}>",      inline=True)
+    emb.add_field("🪙 Change",     f"{symbol}{amt:,}",     inline=True)
+    emb.add_field("💰 New Balance", f"{new:,} coins",      inline=True)
+    await _log(ctx.bot, cfg["log_channel"], emb)
 
 
 # ── Channel management ────────────────────────────────────────────────────────
@@ -93,15 +97,20 @@ async def uncounted_cmd(ctx: lightbulb.SlashContext):
 
     if ch.id in current:
         current.remove(ch.id)
-        msg = f"✅ {ch.mention} can now earn coins."
+        action = "can now earn coins"
     else:
         current.append(ch.id)
-        msg = f"✅ {ch.mention} is now excluded from coin earning."
+        action = "excluded from coin earning"
 
     await set_guild_config_field(db, ctx.guild_id, "uncounted_channels", json.dumps(current))
-    await ctx.respond(msg)
-    await _log(ctx.bot, cfg["log_channel"],
-               f"🔇 <@{ctx.user.id}> toggled uncounted channel {ch.mention}: **{msg.lstrip('✅ ')}**")
+    await ctx.respond(f"✅ {ch.mention} is now {action}.")
+
+    emb = hikari.Embed(title="🔇 Channel Toggled", color=0x5865F2,
+                       timestamp=datetime.now(timezone.utc))
+    emb.add_field("🛡️ Staff",   f"<@{ctx.user.id}>", inline=True)
+    emb.add_field("📢 Channel", ch.mention,            inline=True)
+    emb.add_field("Status",     action,                 inline=True)
+    await _log(ctx.bot, cfg["log_channel"], emb)
 
 
 @plugin.command
@@ -116,9 +125,13 @@ async def bannedrole_cmd(ctx: lightbulb.SlashContext):
     db   = ctx.bot.d.db
     await set_guild_config_field(db, ctx.guild_id, "banned_role", role.id)
     await ctx.respond(f"✅ Banned role set to **{role.name}**.")
+
     cfg = await get_guild_config(db, ctx.guild_id)
-    await _log(ctx.bot, cfg["log_channel"],
-               f"🚫 <@{ctx.user.id}> set banned role to **{role.name}**.")
+    emb = hikari.Embed(title="🚫 Banned Role Updated", color=0xFF6600,
+                       timestamp=datetime.now(timezone.utc))
+    emb.add_field("🛡️ Staff", f"<@{ctx.user.id}>", inline=True)
+    emb.add_field("🚫 Role",  role.name,             inline=True)
+    await _log(ctx.bot, cfg["log_channel"], emb)
 
 
 @plugin.command
@@ -137,15 +150,20 @@ async def allowedrole_cmd(ctx: lightbulb.SlashContext):
 
     if role.id in current:
         current.remove(role.id)
-        msg = f"✅ **{role.name}** removed from allowed earner roles."
+        action = "removed from allowed earner roles"
     else:
         current.append(role.id)
-        msg = f"✅ **{role.name}** added to allowed earner roles."
+        action = "added to allowed earner roles"
 
     await set_guild_config_field(db, ctx.guild_id, "allowed_roles", json.dumps(current))
-    await ctx.respond(msg)
-    await _log(ctx.bot, cfg["log_channel"],
-               f"👥 <@{ctx.user.id}> toggled allowed role **{role.name}**: {msg.lstrip('✅ ')}")
+    await ctx.respond(f"✅ **{role.name}** {action}.")
+
+    emb = hikari.Embed(title="👥 Allowed Role Updated", color=0x5865F2,
+                       timestamp=datetime.now(timezone.utc))
+    emb.add_field("🛡️ Staff", f"<@{ctx.user.id}>", inline=True)
+    emb.add_field("👥 Role",  role.name,             inline=True)
+    emb.add_field("Status",   action,                 inline=True)
+    await _log(ctx.bot, cfg["log_channel"], emb)
 
 
 # ── Channel config ────────────────────────────────────────────────────────────
@@ -162,9 +180,13 @@ async def setapproval_cmd(ctx: lightbulb.SlashContext):
     db  = ctx.bot.d.db
     await set_guild_config_field(db, ctx.guild_id, "approval_channel", ch.id)
     await ctx.respond(f"✅ Approval channel set to {ch.mention}.")
+
     cfg = await get_guild_config(db, ctx.guild_id)
-    await _log(ctx.bot, cfg["log_channel"],
-               f"📋 <@{ctx.user.id}> set approval channel to {ch.mention}.")
+    emb = hikari.Embed(title="📋 Approval Channel Set", color=0x5865F2,
+                       timestamp=datetime.now(timezone.utc))
+    emb.add_field("🛡️ Staff",    f"<@{ctx.user.id}>", inline=True)
+    emb.add_field("📋 Channel",  ch.mention,            inline=True)
+    await _log(ctx.bot, cfg["log_channel"], emb)
 
 
 @plugin.command
@@ -183,8 +205,8 @@ async def setlog_cmd(ctx: lightbulb.SlashContext):
 # ── Shop pricing ──────────────────────────────────────────────────────────────
 
 @plugin.command
-@lightbulb.option("price", "Coins per $1",              type=int,           required=True)
-@lightbulb.option("item",  "Item to set price for",     choices=SHOP_ITEMS, required=False)
+@lightbulb.option("price", "Coins per $1",          type=int,           required=True)
+@lightbulb.option("item",  "Item to set price for", choices=SHOP_ITEMS, required=False)
 @lightbulb.command("setprice", "Staff: set item price (coins per $1)")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def setprice_cmd(ctx: lightbulb.SlashContext):
@@ -206,15 +228,21 @@ async def setprice_cmd(ctx: lightbulb.SlashContext):
         prices = json.loads(cfg["shop_prices"] or "{}")
         prices[item] = price
         await set_guild_config_field(db, ctx.guild_id, "shop_prices", json.dumps(prices))
-        reply = f"✅ **{item}** now costs **{price} coins per $1**."
-        log_msg = f"💲 <@{ctx.user.id}> set **{item}** price to **{price} coins/$1**."
+        reply    = f"✅ **{item}** now costs **{price} coins per $1**."
+        log_item = item
     else:
         await set_guild_config_field(db, ctx.guild_id, "price_per_usd", price)
-        reply = f"✅ Default price set to **{price} coins per $1**."
-        log_msg = f"💲 <@{ctx.user.id}> set default price to **{price} coins/$1**."
+        reply    = f"✅ Default price set to **{price} coins per $1**."
+        log_item = "Default (all items)"
 
     await ctx.respond(reply)
-    await _log(ctx.bot, cfg["log_channel"], log_msg)
+
+    emb = hikari.Embed(title="💲 Price Updated", color=0x5865F2,
+                       timestamp=datetime.now(timezone.utc))
+    emb.add_field("🛡️ Staff", f"<@{ctx.user.id}>",  inline=True)
+    emb.add_field("🎁 Item",  log_item,               inline=True)
+    emb.add_field("💲 Price", f"{price} coins / $1",  inline=True)
+    await _log(ctx.bot, cfg["log_channel"], emb)
 
 
 # ── Bot customisation ─────────────────────────────────────────────────────────
@@ -231,7 +259,7 @@ async def customize_cmd(ctx: lightbulb.SlashContext):
         await ctx.respond("❌ Owner only.", flags=hikari.MessageFlag.EPHEMERAL)
         return
 
-    bot        = ctx.bot
+    bot         = ctx.bot
     avatar_data = None
     banner_data = None
     changes     = []
@@ -246,7 +274,6 @@ async def customize_cmd(ctx: lightbulb.SlashContext):
             await ctx.respond(f"❌ Failed to fetch image: {e}", flags=hikari.MessageFlag.EPHEMERAL)
             return None
 
-    # Avatar
     if ctx.options.pfp_file:
         avatar_data = await _fetch(ctx.options.pfp_file.url)
         if avatar_data is None:
@@ -258,7 +285,6 @@ async def customize_cmd(ctx: lightbulb.SlashContext):
             return
         changes.append("avatar")
 
-    # Banner
     if ctx.options.banner_file:
         banner_data = await _fetch(ctx.options.banner_file.url)
         if banner_data is None:
@@ -286,9 +312,13 @@ async def customize_cmd(ctx: lightbulb.SlashContext):
         await bot.rest.edit_my_user(**kwargs)
         changed = " and ".join(changes)
         await ctx.respond(f"✅ Bot **{changed}** updated!")
+
         cfg = await get_guild_config(bot.d.db, ctx.guild_id)
-        await _log(bot, cfg["log_channel"],
-                   f"🎨 <@{ctx.user.id}> updated the bot's **{changed}**.")
+        emb = hikari.Embed(title="🎨 Bot Customised", color=0x5865F2,
+                           timestamp=datetime.now(timezone.utc))
+        emb.add_field("🛡️ Owner",   f"<@{ctx.user.id}>", inline=True)
+        emb.add_field("✏️ Changed", changed,               inline=True)
+        await _log(bot, cfg["log_channel"], emb)
     except Exception as e:
         await ctx.respond(f"❌ Failed to update: {e}", flags=hikari.MessageFlag.EPHEMERAL)
 

@@ -262,36 +262,41 @@ async def adjust_coins(db, guild_id: int, user_id: int, delta: int) -> int:
 
 async def add_earned_coins(
     db, guild_id: int, user_id: int,
-    base: int, is_boosting: bool, streak: int
+    base: int, is_boosting: bool, streak: int,
+    track_progress: bool = True
 ) -> int:
     from utils.helpers import get_streak_mult
     daily_limit = 400 if is_boosting else 200
     today = datetime.now(timezone.utc).date().isoformat()
 
-    async with db.execute(
-        "SELECT earned FROM daily_earnings WHERE guild_id=? AND user_id=? AND earn_date=?",
-        (guild_id, user_id, today)
-    ) as c:
-        row = await c.fetchone()
-    earned = row["earned"] if row else 0
+    earned = 0
+    if track_progress:
+        async with db.execute(
+            "SELECT earned FROM daily_earnings WHERE guild_id=? AND user_id=? AND earn_date=?",
+            (guild_id, user_id, today)
+        ) as c:
+            row = await c.fetchone()
+        earned = row["earned"] if row else 0
 
-    if earned >= daily_limit:
-        return 0
+        if earned >= daily_limit:
+            return 0
 
     mult   = get_streak_mult(streak) * (2.0 if is_boosting else 1.0)
     actual = max(1, int(base * mult))
-    actual = min(actual, daily_limit - earned)
+    if track_progress:
+        actual = min(actual, daily_limit - earned)
 
     await db.execute(
         "INSERT INTO users (guild_id, user_id, coins) VALUES (?,?,?) "
         "ON CONFLICT(guild_id, user_id) DO UPDATE SET coins = coins + excluded.coins",
         (guild_id, user_id, actual)
     )
-    await db.execute(
-        "INSERT INTO daily_earnings (guild_id, user_id, earn_date, earned) VALUES (?,?,?,?) "
-        "ON CONFLICT(guild_id, user_id, earn_date) DO UPDATE SET earned = earned + excluded.earned",
-        (guild_id, user_id, today, actual)
-    )
+    if track_progress:
+        await db.execute(
+            "INSERT INTO daily_earnings (guild_id, user_id, earn_date, earned) VALUES (?,?,?,?) "
+            "ON CONFLICT(guild_id, user_id, earn_date) DO UPDATE SET earned = earned + excluded.earned",
+            (guild_id, user_id, today, actual)
+        )
     await db.commit()
     return actual
 

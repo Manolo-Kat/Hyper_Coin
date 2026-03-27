@@ -28,10 +28,22 @@ SHOP_ITEMS = [
     "Nintendo Card", "Roblox"
 ]
 
-# Items that require the user to provide a region
 REGION_ITEMS = {"Google Play", "Apple Store", "Nintendo Card", "Roblox"}
-# Items that require the user to provide an email
 EMAIL_ITEMS  = {"PayPal"}
+GIFT_CARD_ITEMS = {"Steam", "Google Play", "Apple Store", "Nintendo Card", "Roblox",
+                   "Discord Nitro Basic", "Discord Nitro Boost"}
+
+MIN_PURCHASE_USD = 5
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+async def _log_embed(bot, channel_id, embed: hikari.Embed) -> None:
+    if channel_id:
+        try:
+            await bot.rest.create_message(channel_id, embed=embed)
+        except Exception:
+            pass
 
 
 # ── Purchase approval view ─────────────────────────────────────────────────────
@@ -66,6 +78,7 @@ class ShopAcceptModal(miru.Modal, title="Enter Delivery Details"):
         await add_weekly_spent(db, gid, uid, wkey, amt)
         await remove_pending_purchase(db, mid)
 
+        # Edit the approval message
         try:
             orig = await bot.rest.fetch_message(meta["channel_id"], mid)
             emb  = orig.embeds[0] if orig.embeds else hikari.Embed()
@@ -76,26 +89,49 @@ class ShopAcceptModal(miru.Modal, title="Enter Delivery Details"):
         except Exception as e:
             logger.warning(f"Could not edit approval msg: {e}")
 
+        # DM the user — gift cards get the code, PayPal just gets "approved"
         try:
             ch = await bot.rest.create_dm_channel(uid)
-            await bot.rest.create_message(
-                ch,
-                f"🎉 Your **{rtype}** purchase of **${amt}** was **approved**! "
-                f"Remaining balance: **{new_bal:,} coins**."
-            )
+            if rtype in GIFT_CARD_ITEMS:
+                dm_emb = hikari.Embed(
+                    title="🎉 Purchase Approved!",
+                    color=0x00FF88,
+                    timestamp=now
+                )
+                dm_emb.add_field("🎁 Item",         rtype,                inline=True)
+                dm_emb.add_field("💵 Amount",        f"${amt}",            inline=True)
+                dm_emb.add_field("💰 New Balance",   f"{new_bal:,} coins", inline=True)
+                dm_emb.add_field("🎫 Your Code / Details", self.info.value, inline=False)
+                dm_emb.set_footer(text="Keep this code safe!")
+            else:
+                # PayPal — don't reveal delivery notes, just confirm approval
+                dm_emb = hikari.Embed(
+                    title="🎉 Purchase Approved!",
+                    description=(
+                        f"Your **PayPal** transfer of **${amt}** has been approved "
+                        "and will be sent to your account shortly."
+                    ),
+                    color=0x00FF88,
+                    timestamp=now
+                )
+                dm_emb.add_field("💰 New Balance", f"{new_bal:,} coins", inline=True)
+            await bot.rest.create_message(ch, embed=dm_emb)
         except Exception:
             pass
 
+        # Log (embed)
         cfg = await get_guild_config(db, gid)
-        if cfg["log_channel"]:
-            try:
-                await bot.rest.create_message(
-                    cfg["log_channel"],
-                    f"✅ <@{ctx.user.id}> approved **${amt} {rtype}** for <@{uid}>. "
-                    f"Delivery: `{self.info.value}`"
-                )
-            except Exception:
-                pass
+        log_emb = hikari.Embed(
+            title="✅ Purchase Approved",
+            color=0x00FF88,
+            timestamp=now
+        )
+        log_emb.add_field("🛡️ Staff",    f"<@{ctx.user.id}>", inline=True)
+        log_emb.add_field("👤 User",     f"<@{uid}>",          inline=True)
+        log_emb.add_field("🎁 Item",     rtype,                 inline=True)
+        log_emb.add_field("💵 Amount",   f"${amt}",             inline=True)
+        log_emb.add_field("📦 Delivery", self.info.value,        inline=False)
+        await _log_embed(bot, cfg["log_channel"], log_emb)
 
         await ctx.respond(
             f"✅ Approved! {coins:,} coins deducted from <@{uid}>.",
@@ -137,6 +173,7 @@ class ShopApprovalView(miru.View):
 
         await remove_pending_purchase(db, meta["message_id"])
 
+        # Edit approval message
         try:
             orig = await bot.rest.fetch_message(meta["channel_id"], meta["message_id"])
             emb  = orig.embeds[0] if orig.embeds else hikari.Embed()
@@ -148,25 +185,34 @@ class ShopApprovalView(miru.View):
         except Exception as e:
             logger.warning(f"Could not edit rejection msg: {e}")
 
+        # DM user (embed)
         try:
             ch = await bot.rest.create_dm_channel(meta["user_id"])
-            await bot.rest.create_message(
-                ch,
-                f"❌ Your **{meta['item_type']}** purchase of **${meta['amount']}** was **rejected**."
+            dm_emb = hikari.Embed(
+                title="❌ Purchase Rejected",
+                description=(
+                    f"Your **{meta['item_type']}** purchase of **${meta['amount']}** "
+                    "was rejected by staff."
+                ),
+                color=0xFF3333,
+                timestamp=datetime.now(timezone.utc)
             )
+            await bot.rest.create_message(ch, embed=dm_emb)
         except Exception:
             pass
 
+        # Log (embed)
         cfg = await get_guild_config(db, meta["guild_id"])
-        if cfg["log_channel"]:
-            try:
-                await bot.rest.create_message(
-                    cfg["log_channel"],
-                    f"❌ <@{ctx.user.id}> rejected **${meta['amount']} {meta['item_type']}** "
-                    f"for <@{meta['user_id']}>."
-                )
-            except Exception:
-                pass
+        log_emb = hikari.Embed(
+            title="❌ Purchase Rejected",
+            color=0xFF3333,
+            timestamp=datetime.now(timezone.utc)
+        )
+        log_emb.add_field("🛡️ Staff",  f"<@{ctx.user.id}>",     inline=True)
+        log_emb.add_field("👤 User",   f"<@{meta['user_id']}>",  inline=True)
+        log_emb.add_field("🎁 Item",   meta["item_type"],          inline=True)
+        log_emb.add_field("💵 Amount", f"${meta['amount']}",       inline=True)
+        await _log_embed(bot, cfg["log_channel"], log_emb)
 
         self.stop()
         await ctx.respond("❌ Purchase rejected.", flags=hikari.MessageFlag.EPHEMERAL)
@@ -181,8 +227,8 @@ class DropView(miru.View):
         self.guild_id = guild_id
         self.coins    = coins
         self.claimed  = False
-        self.msg_id   = None   # set after message is sent
-        self.chan_id  = None   # set after message is sent
+        self.msg_id   = None
+        self.chan_id  = None
 
     @miru.button(label="🪙 Claim!", style=hikari.ButtonStyle.SUCCESS)
     async def claim(self, ctx: miru.ViewContext, _):
@@ -192,7 +238,6 @@ class DropView(miru.View):
         self.claimed = True
         self.stop()
 
-        # Remove from DB
         if self.msg_id:
             await remove_pending_drop(ctx.client.app.d.db, self.msg_id)
 
@@ -216,18 +261,14 @@ class DropView(miru.View):
         else:
             emb = hikari.Embed(
                 title="📊 Daily Limit Reached",
-                description="You've hit your daily chat limit — no coins added.",
+                description=f"<@{ctx.user.id}> tried to claim but hit their daily chat limit.",
                 color=0xFF6600
             )
 
-        try:
-            await ctx.message.edit(embed=emb, components=[])
-        except Exception:
-            pass
-        await ctx.respond(embed=emb, flags=hikari.MessageFlag.EPHEMERAL)
+        # Edit the drop message — no private reply to the claimer
+        await ctx.edit_response(embed=emb, components=[])
 
     async def on_timeout(self):
-        # Remove from DB
         if self.msg_id and self.bot and self.bot.d.db:
             try:
                 await remove_pending_drop(self.bot.d.db, self.msg_id)
@@ -239,9 +280,8 @@ class DropView(miru.View):
                 description="Nobody claimed the coins in time!",
                 color=0x888888
             )
-            msg = self.message
-            if msg:
-                await msg.edit(embed=emb, components=[])
+            if self.message:
+                await self.message.edit(embed=emb, components=[])
         except Exception:
             pass
 
@@ -249,10 +289,10 @@ class DropView(miru.View):
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 @plugin.command
-@lightbulb.option("email",  "Your PayPal email (PayPal only)",                              required=False)
-@lightbulb.option("region", "Region/country (Google Play, Apple, Nintendo, Roblox only)",   required=False)
-@lightbulb.option("item",   "Which item to purchase",         choices=SHOP_ITEMS,           required=True)
-@lightbulb.option("amount", "Amount in USD to redeem",        type=int,                     required=True)
+@lightbulb.option("email",  "Your PayPal email (PayPal only)",                             required=False)
+@lightbulb.option("region", "Region/country (Google Play, Apple, Nintendo, Roblox only)",  required=False)
+@lightbulb.option("item",   "Which item to purchase",        choices=SHOP_ITEMS,           required=True)
+@lightbulb.option("amount", "Amount in USD to redeem",       type=int,                     required=True)
 @lightbulb.command("buy", "Redeem coins for a real-world gift")
 @lightbulb.implements(lightbulb.SlashCommand)
 async def buy_cmd(ctx: lightbulb.SlashContext):
@@ -261,8 +301,11 @@ async def buy_cmd(ctx: lightbulb.SlashContext):
     amt   = ctx.options.amount
     rtype = ctx.options.item
 
-    if amt <= 0:
-        await ctx.respond("❌ Amount must be positive.", flags=hikari.MessageFlag.EPHEMERAL)
+    if amt < MIN_PURCHASE_USD:
+        await ctx.respond(
+            f"❌ Minimum purchase amount is **${MIN_PURCHASE_USD}**.",
+            flags=hikari.MessageFlag.EPHEMERAL
+        )
         return
 
     cfg = await get_guild_config(db, ctx.guild_id)
@@ -277,14 +320,12 @@ async def buy_cmd(ctx: lightbulb.SlashContext):
         )
         return
 
-    # Validate required extra info
     region = (ctx.options.region or "").strip()
     email  = (ctx.options.email  or "").strip()
 
     if rtype in REGION_ITEMS and not region:
         await ctx.respond(
-            f"❌ **{rtype}** requires a **region** (e.g. US, UK, Egypt). "
-            "Use the `region` option.",
+            f"❌ **{rtype}** requires a **region** (e.g. US, UK, Egypt). Use the `region` option.",
             flags=hikari.MessageFlag.EPHEMERAL
         )
         return
@@ -296,7 +337,6 @@ async def buy_cmd(ctx: lightbulb.SlashContext):
         )
         return
 
-    # Price
     prices = json.loads(cfg["shop_prices"] or "{}")
     ppu    = prices.get(rtype, cfg["price_per_usd"] or 100)
     coins  = amt * ppu
@@ -309,7 +349,6 @@ async def buy_cmd(ctx: lightbulb.SlashContext):
         )
         return
 
-    # Weekly limit
     now  = datetime.now(timezone.utc)
     wkey = make_week_key(ctx.user.id, now)
     ws   = await get_weekly_spent(db, ctx.guild_id, ctx.user.id, wkey)
@@ -392,16 +431,18 @@ async def drop_cmd(ctx: lightbulb.SlashContext):
     await save_pending_drop(db, msg.id, ctx.guild_id, ctx.channel_id, amount)
     bot.d.miru.start_view(view, bind_to=msg)
 
-    # Log
+    # Log (embed)
     cfg = await get_guild_config(db, ctx.guild_id)
     if cfg["log_channel"]:
-        try:
-            await bot.rest.create_message(
-                cfg["log_channel"],
-                f"💸 <@{ctx.user.id}> dropped **{amount:,} coins** in <#{ctx.channel_id}>."
-            )
-        except Exception:
-            pass
+        log_emb = hikari.Embed(
+            title="💸 Coin Drop Created",
+            color=0xFFD700,
+            timestamp=datetime.now(timezone.utc)
+        )
+        log_emb.add_field("🛡️ Staff",    f"<@{ctx.user.id}>", inline=True)
+        log_emb.add_field("💰 Amount",   f"{amount:,} coins",  inline=True)
+        log_emb.add_field("📢 Channel",  f"<#{ctx.channel_id}>", inline=True)
+        await _log_embed(bot, cfg["log_channel"], log_emb)
 
 
 # ── Extension loader ──────────────────────────────────────────────────────────

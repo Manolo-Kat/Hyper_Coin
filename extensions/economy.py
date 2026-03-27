@@ -97,7 +97,8 @@ async def daily_cmd(ctx: lightbulb.SlashContext):
 
     await update_daily_claim(db, ctx.guild_id, ctx.user.id, now.isoformat(), new_streak)
     async with bot.d.user_locks[ctx.user.id]:
-        await add_earned_coins(db, ctx.guild_id, ctx.user.id, amt, boosting, new_streak)
+        await add_earned_coins(db, ctx.guild_id, ctx.user.id, amt, boosting, new_streak,
+                               track_progress=False)
 
     mult    = get_streak_mult(new_streak)
     next_ts = int((now + timedelta(hours=24)).timestamp())
@@ -166,11 +167,11 @@ async def balance_cmd(ctx: lightbulb.SlashContext):
     emb.add_field("<:Multiplier:1486881692290646167> Multiplier", f"×{mult}",                              inline=True)
     emb.add_field("<:Streak:1486881911606612087> Streak",    f"{streak} day{'s' if streak != 1 else ''}",  inline=True)
     emb.add_field("<:Booster:1486882041378111639> Booster",
-                  "Active — 2× coins & 400/day" if boosting else "Not boosting",                           inline=True)
+                  "Yes" if boosting else "No",                           inline=True)
     emb.add_field("<a:weeklyspend:1486882130909728828> Weekly Spend", f"${week_spent}/$20",                inline=True)
     emb.add_field(
         f"<a:dailyprogress:1486882218369482772> Daily Progress  ({earned_today}/{daily_limit})",
-        f"`{bar}` *(from chatting only, not /daily)*",
+        f"`{bar}`",
         inline=False
     )
     emb.timestamp = now
