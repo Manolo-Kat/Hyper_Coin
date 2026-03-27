@@ -158,18 +158,18 @@ async def balance_cmd(ctx: lightbulb.SlashContext):
     wk         = make_week_key(target.id, now)
     week_spent = await get_weekly_spent(db, ctx.guild_id, target.id, wk)
 
-    emb = hikari.Embed(title="💰 Balance", color=0xFFD700)
+    emb = hikari.Embed(title="<a:balance:1486881268502102066> Balance", color=0xFFD700)
     emb.set_author(name=target.username)
     emb.set_thumbnail(target.avatar_url or target.default_avatar_url)
-    emb.add_field("🪙 Coins",       f"{bal:,}",                                   inline=True)
-    emb.add_field("💵 Value",       val_str,                                       inline=True)
-    emb.add_field("✨ Multiplier",  f"×{mult}",                                    inline=True)
-    emb.add_field("🔥 Streak",      f"{streak} day{'s' if streak != 1 else ''}",   inline=True)
-    emb.add_field("⚡ Booster",
-                  "Active — 2× coins & 400/day" if boosting else "Not boosting",   inline=True)
-    emb.add_field("📅 Weekly Spend", f"${week_spent}/$20",                         inline=True)
+    emb.add_field("<:coins:1486881548069507164> Coins",      f"{bal:,}",                                   inline=True)
+    emb.add_field("<:Value:1486881823995723786> Value",      val_str,                                       inline=True)
+    emb.add_field("<:Multiplier:1486881692290646167> Multiplier", f"×{mult}",                              inline=True)
+    emb.add_field("<:Streak:1486881911606612087> Streak",    f"{streak} day{'s' if streak != 1 else ''}",  inline=True)
+    emb.add_field("<:Booster:1486882041378111639> Booster",
+                  "Active — 2× coins & 400/day" if boosting else "Not boosting",                           inline=True)
+    emb.add_field("<a:weeklyspend:1486882130909728828> Weekly Spend", f"${week_spent}/$20",                inline=True)
     emb.add_field(
-        f"💬 Chat Coins Today  ({earned_today}/{daily_limit})",
+        f"<a:dailyprogress:1486882218369482772> Daily Progress  ({earned_today}/{daily_limit})",
         f"`{bar}` *(from chatting only, not /daily)*",
         inline=False
     )
