@@ -3,6 +3,8 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 
+import hikari
+
 logger = logging.getLogger("HyperCoin")
 
 STREAK_MULT = {0: 1.0, 1: 1.25, 2: 1.5, 3: 1.75, 4: 2.0, 5: 2.25, 6: 2.25, 7: 2.5}
@@ -22,9 +24,24 @@ def is_banned_member(banned_role_id, member) -> bool:
     return banned_role_id in member.role_ids
 
 
+def is_staff(ctx) -> bool:
+    """Return True if the slash-context user has the mod role or is the owner."""
+    from utils.config import MOD_ROLE_ID, OWNER_ID
+    return MOD_ROLE_ID in ctx.member.role_ids or ctx.user.id == OWNER_ID
+
+
+async def send_log_embed(bot, channel_id, embed: hikari.Embed) -> None:
+    """Send an embed to the log channel. Logs a warning if sending fails."""
+    if not channel_id:
+        return
+    try:
+        await bot.rest.create_message(channel_id, embed=embed)
+    except Exception as e:
+        logger.warning(f"Failed to send log embed to channel {channel_id}: {e}")
+
+
 # ── Currency helpers ──────────────────────────────────────────────────────────
 
-# Maps common country/currency names (lowercase) → ISO 4217 code
 COUNTRY_CURRENCY_MAP: dict[str, str] = {
     # Reset sentinel
     'coins': 'COINS', 'coin': 'COINS', 'default': 'COINS', 'reset': 'COINS',
@@ -118,48 +135,41 @@ COUNTRY_CURRENCY_MAP: dict[str, str] = {
 
 
 def normalize_currency(inp: str) -> str | None:
-    """
-    Converts user input to an ISO 4217 currency code.
-    Returns 'COINS' for reset requests, a code string otherwise, or None if unrecognizable.
-    """
     clean = inp.strip().lower()
-
     if clean in COUNTRY_CURRENCY_MAP:
         return COUNTRY_CURRENCY_MAP[clean]
-
-    # Treat as a raw currency code
     code = inp.strip().upper()
     if 2 <= len(code) <= 5 and code.isalpha():
         return code
-
     return None
 
 
 async def get_exchange_rate(bot, currency: str) -> float | None:
-    """Fetch exchange rate from USD. Uses open.er-api.com, caches all rates at once."""
+    """Fetch exchange rate from USD. Lock is held for the entire fetch to prevent duplicate requests."""
     if currency in ('USD', 'COINS'):
         return 1.0 if currency == 'USD' else None
 
     async with bot.d.rate_lock:
+        # Check cache inside the lock
         cached = bot.d.rate_cache.get(currency)
-        if cached:
+        if cached is not None:
             rate, ts = cached
             if (datetime.now(timezone.utc) - ts).total_seconds() < 3600:
                 return rate
 
-    try:
-        async with bot.d.http.get("https://open.er-api.com/v6/latest/USD") as r:
-            if r.status == 200:
-                data = await r.json()
-                if data.get('result') == 'success':
-                    rates = data.get('rates', {})
-                    now = datetime.now(timezone.utc)
-                    async with bot.d.rate_lock:
+        # Fetch while holding the lock — prevents two coroutines both firing requests
+        try:
+            async with bot.d.http.get("https://open.er-api.com/v6/latest/USD") as r:
+                if r.status == 200:
+                    data = await r.json()
+                    if data.get('result') == 'success':
+                        rates = data.get('rates', {})
+                        now   = datetime.now(timezone.utc)
                         for c, v in rates.items():
                             bot.d.rate_cache[c] = (v, now)
-                    return rates.get(currency)
-    except Exception as e:
-        logger.warning(f"Exchange rate fetch failed: {e}")
+                        return rates.get(currency)
+        except Exception as e:
+            logger.warning(f"Exchange rate fetch failed: {e}")
 
     return None
 
@@ -167,16 +177,13 @@ async def get_exchange_rate(bot, currency: str) -> float | None:
 # ── Spam Tracker ──────────────────────────────────────────────────────────────
 
 class SpamTracker:
-    """
-    Advanced in-memory spam detector for coin earning.
-    Tracks message patterns per user and flags spam behaviour.
-    """
     WINDOW          = 30
     RATE_LIMIT      = 5
     BURST_THRESHOLD = 4
     BURST_SPAN      = 6
     SIMILAR_RATIO   = 0.80
     SIMILAR_MIN     = 3
+    SIMILAR_MAX_LEN = 150   # skip similarity check for long messages
 
     def __init__(self):
         self._history: dict[int, deque]    = defaultdict(lambda: deque(maxlen=20))
@@ -184,10 +191,10 @@ class SpamTracker:
 
     def detect(self, user_id: int, content: str, now: datetime) -> bool:
         exp = self._penalty.get(user_id)
-        if exp:
+        if exp is not None:
             if now < exp:
                 return True
-            del self._penalty[user_id]
+            del self._penalty[user_id]  # expired — remove so dict doesn't grow forever
 
         history = self._history[user_id]
         cutoff  = now.timestamp() - self.WINDOW
@@ -215,7 +222,8 @@ class SpamTracker:
                 logger.info(f"[spam] {user_id} repeated message (2 min)")
                 return True
 
-        if content.strip() and len(history) >= self.SIMILAR_MIN - 1:
+        # Skip similarity check for long messages (too expensive and rarely spam)
+        if content.strip() and len(content) <= self.SIMILAR_MAX_LEN and len(history) >= self.SIMILAR_MIN - 1:
             recent = [c for _, c in list(history)[-(self.SIMILAR_MIN - 1):] if c.strip()]
             if len(recent) >= self.SIMILAR_MIN - 1:
                 cl = content.lower()
